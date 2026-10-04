@@ -87,9 +87,14 @@ function plane(from, store) {
 $('#upload').addEventListener('click', () => { if (!S.store) { toast('Сначала создай хранилище', 'database', true); return; } $('#pick').click(); });
 $('#pick').addEventListener('change', e => { startUpload(e.target.files); e.target.value = ''; });
 let dragDepth = 0;
+let dropTimer = 0;
+const dropOff = () => { dragDepth = 0; clearTimeout(dropTimer); $('#drop').classList.remove('on'); };
 const hasFiles = e => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
-addEventListener('dragenter', e => { if (!hasFiles(e) || S.sec !== 'files' || !S.authed || !S.store) return; e.preventDefault(); dragDepth++; $('#drop-where').textContent = `Нарежем на куски по 20 МБ и отправим в «${S.path ? segs(S.path).pop() : S.store.name}»`; $('#drop').classList.add('on'); });
-addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener('dragenter', e => { if (!hasFiles(e) || S.sec !== 'files' || !S.authed || !S.store) return; e.preventDefault(); dragDepth++; $('#drop-where').textContent = `Нарежем на куски по 20 МБ и отправим в «${S.path ? segs(S.path).pop() : S.store.name}»`; $('#drop').classList.add('on'); clearTimeout(dropTimer); dropTimer = setTimeout(dropOff, 800); });
+// The overlay closes itself once dragover stops arriving (drag left the window or was cancelled).
+addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); if ($('#drop').classList.contains('on')) { clearTimeout(dropTimer); dropTimer = setTimeout(dropOff, 400); } });
+addEventListener('blur', dropOff);
+addEventListener('pointermove', () => { if ($('#drop').classList.contains('on')) dropOff(); });
 addEventListener('dragleave', e => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('#drop').classList.remove('on'); });
 addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('#drop').classList.remove('on'); if (S.sec === 'files' && S.authed && S.store) startUpload(e.dataTransfer.files); });
 addEventListener('beforeunload', e => { if (upActive || ups.length) { e.preventDefault(); e.returnValue = ''; } });
