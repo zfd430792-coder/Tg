@@ -1,12 +1,21 @@
 {$DOMAIN} {
-	encode zstd gzip
+	# API goes to Pentaract; open sign-up is closed (accounts are handed out by the admin).
+	handle /api/* {
+		@register {
+			method POST
+			path /api/users /api/users/
+		}
+		respond @register "Регистрация закрыта: доступ выдаёт администратор" 403
 
-	# Open sign-up is closed: accounts are handed out by the admin.
-	@register {
-		method POST
-		path /api/users /api/users/
+		reverse_proxy pentaract:8000
 	}
-	respond @register "Регистрация закрыта: доступ выдаёт администратор" 403
 
-	reverse_proxy pentaract:8000
+	# Everything else is the web UI from ./ui; unknown paths fall back to index.html.
+	handle {
+		root * /srv/ui
+		encode zstd gzip
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
 }
