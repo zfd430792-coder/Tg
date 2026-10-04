@@ -18,10 +18,12 @@ const keep = {
 };
 const isDarkNow = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches; };
 const restart = el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; };
+// html.booting: the first screen is still being prepared behind the loading screen.
+const booting = () => document.documentElement.classList.contains('booting');
 // Entrance motion is opt-in and skipped during the initial load, so the first frame never moves.
 const EASE = 'cubic-bezier(.22,1,.36,1)';
 function enter(el, from, opts = {}) {
-  if (!el || reduced.matches || document.documentElement.classList.contains('booting') || !el.animate) return;
+  if (!el || reduced.matches || booting() || !el.animate) return;
   el.animate([{ transform: from }, { transform: 'none' }], { duration: 600, easing: EASE, fill: 'backwards', ...opts });
 }
 // Channel ids are stored by Pentaract without the -100 prefix; people copy them with it.
@@ -113,7 +115,8 @@ function toast(msg, icon = 'check', bad = false) {
 }
 function countTo(el, to, fmt) {
   const from = +el.dataset.v || 0; el.dataset.v = to;
-  if (reduced.matches || from === to || document.hidden) { el.textContent = fmt(to); return; }
+  // Count up only where someone can see it; behind the loading or login screen the number is just set.
+  if (reduced.matches || from === to || document.hidden || booting() || getComputedStyle(el).visibility !== 'visible') { el.textContent = fmt(to); return; }
   setTimeout(() => { if (+el.dataset.v === to) el.textContent = fmt(to); }, 900);
   const s = performance.now();
   (function f(n) { const k = Math.min(1, (n - s) / 800), e = 1 - Math.pow(1 - k, 3); el.textContent = fmt(from + (to - from) * e); if (k < 1) requestAnimationFrame(f); })(s);
@@ -124,6 +127,12 @@ function fieldErr(form, inp, msg) {
 }
 function clearErr(form) { const e = form.querySelector('.err'); if (e) e.hidden = true; $$('[aria-invalid]', form).forEach(i => i.removeAttribute('aria-invalid')); }
 document.addEventListener('input', e => { const f = e.target.closest('form'); if (!f) return; e.target.removeAttribute('aria-invalid'); const er = f.querySelector('.err'); if (er) er.hidden = true; });
+// Resolves once the web fonts needed by the laid-out page have loaded (or after `ms`), so text never changes font in view.
+function fontsSettled(ms) {
+  if (!document.fonts || !document.fonts.ready) return Promise.resolve();
+  void document.body.offsetWidth; // lay the page out now so the fonts it needs start loading
+  return Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, ms))]);
+}
 async function busy(btn, fn) {
   if (btn.classList.contains('busy')) return;
   const html = btn.innerHTML; btn.classList.add('busy'); btn.innerHTML = '<span class="spin" aria-hidden="true"></span>' + btn.textContent.trim();

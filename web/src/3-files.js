@@ -49,7 +49,7 @@ async function loadStores() {
   let known = [];
   try { known = JSON.parse(keep.get(knownKey()) || '[]'); } catch (e) { }
   for (const id of known.filter(id => !list.some(s => s.id === id))) {
-    try { const s = await API.storage(id); if (s) list.push({ ...s, size: 0, files_amount: 0 }); } catch (e) { if (e.status === 401) return; }
+    try { const s = await API.storage(id); if (s) list.push({ ...s, size: 0, files_amount: 0 }); } catch (e) { if (e.status === 401) throw e; }
   }
   S.stores = list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   keep.set(knownKey(), JSON.stringify(S.stores.map(s => s.id)));
@@ -96,9 +96,11 @@ function showSection(sec, push = true) {
   $$('#nav button').forEach(b => b.classList.toggle('is-active', b.dataset.sec === sec));
   $$('.store').forEach(b => b.classList.toggle('is-active', sec === 'files' && !!S.store && b.dataset.id === S.store.id));
   movePill(); closeDrawer();
+  let job;
   if (sec === 'bots') { setHash('#/bots', push); renderBots(); loadWorkers().then(renderBots); }
-  if (sec === 'people') { setHash(hashFor('people', S.peopleStore), push); renderPeople(); }
-  scrollTo({ top: 0, behavior: reduced.matches ? 'auto' : 'smooth' });
+  if (sec === 'people') { setHash(hashFor('people', S.peopleStore), push); job = renderPeople(); }
+  scrollTo({ top: 0, behavior: reduced.matches || booting() ? 'auto' : 'smooth' });
+  return job;
 }
 
 /* ---------- files ---------- */
@@ -175,11 +177,13 @@ function renderFiles(quiet = false) {
     return;
   }
   g.innerHTML = items.map((n, i) => cardHTML(n, i)).join('');
+  wireThumbs();
 }
 function highlight(path) { const el = $$('.card').find(c => c.dataset.path === path); if (el) { el.classList.add('fresh'); el.scrollIntoView({ block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' }); } }
 $('#grid').addEventListener('click', e => {
   const go = e.target.closest('[data-go]'); if (go) { showSection(go.dataset.go); return; }
   if (e.target.closest('[data-act="new-store"]')) { openStoreModal(); return; }
+  if (e.target.closest('[data-act="reload"]')) { location.reload(); return; }
   const c = e.target.closest('.card'); if (!c) return;
   const n = S.items.find(x => x.path === c.dataset.path); if (!n) return;
   if (!n.is_file) openStore(S.store, n.path); else openDrawer(n, c);
@@ -199,21 +203,79 @@ function confirmFolderDelete() {
   });
 }
 
+
+/* ---------- previews: real thumbnails for small images, played media in the drawer ---------- */
+// Every download costs Telegram requests (rate-limited per bot), so thumbnails load one at a
+// time, only when visible, never during uploads, and are kept in the browser's Cache Storage.
+const THUMB_MAX = 10 * MB, MEDIA_MAX = 100 * MB;
+const noPreview = name => /\.(heic|heif|tif|tiff|raw|cr2|nef|psd)$/i.test(name);
+const previewable = n => n.is_file && kindOf(n.name) === 'image' && !noPreview(n.name) && n.size <= THUMB_MAX;
+const previewUrls = new Map();
+const pkey = (sid, n) => `${sid}|${n.path}|${n.size}`;
+async function cacheGet(key) { try { const c = await caches.open('pentaract-previews'), r = await c.match('/__preview/' + encodeURIComponent(key)); return r ? await r.blob() : null; } catch (e) { return null; } }
+async function cachePut(key, blob) { try { const c = await caches.open('pentaract-previews'); await c.put('/__preview/' + encodeURIComponent(key), new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } })); } catch (e) { } }
+async function getPreview(sid, n) {
+  const key = pkey(sid, n); if (previewUrls.has(key)) return previewUrls.get(key);
+  const persist = n.size <= THUMB_MAX;
+  let blob = persist ? await cacheGet(key) : null;
+  if (!blob) { blob = await (await API.download(sid, n.path)).blob(); if (persist && blob.size) cachePut(key, blob); }
+  const url = URL.createObjectURL(blob); previewUrls.set(key, url); return url;
+}
+function clearPreviews() { previewUrls.forEach(u => URL.revokeObjectURL(u)); previewUrls.clear(); }
+const thumbQ = []; let thumbBusy = false;
+const thumbObs = 'IntersectionObserver' in window ? new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { thumbObs.unobserve(e.target); thumbQ.push(e.target); pumpThumbs(); } }), { rootMargin: '200px' }) : null;
+function setThumb(card, url) {
+  const t = card.querySelector('.thumb'); if (!t || t.querySelector('img.pv')) return;
+  const img = new Image(); img.className = 'pv'; img.alt = ''; img.decoding = 'async';
+  img.onload = () => t.classList.add('has-pv'); img.src = url; t.appendChild(img);
+}
+async function pumpThumbs() {
+  if (thumbBusy || !thumbQ.length) return;
+  if (typeof upActive !== 'undefined' && (upActive || ups.length)) { setTimeout(pumpThumbs, 3000); return; }
+  const card = thumbQ.shift(); if (!card.isConnected) return pumpThumbs();
+  thumbBusy = true;
+  try { const n = S.items.find(x => x.path === card.dataset.path); if (n && S.store) { const url = await getPreview(S.store.id, n); if (card.isConnected) setThumb(card, url); } }
+  catch (e) { } finally { thumbBusy = false; pumpThumbs(); }
+}
+function wireThumbs() {
+  if (!thumbObs || !S.store) return;
+  thumbObs.disconnect(); thumbQ.length = 0;
+  for (const c of $$('.card')) {
+    const n = S.items.find(x => x.path === c.dataset.path); if (!n || !previewable(n)) continue;
+    const url = previewUrls.get(pkey(S.store.id, n)); if (url) setThumb(c, url); else thumbObs.observe(c);
+  }
+}
+async function showInDrawer(n, mode) {
+  const st = S.store, box = $('#drawer .thumb'); if (!box) return;
+  box.classList.add('loading');
+  try {
+    const url = await getPreview(st.id, n);
+    if (drawerNode !== n) return;
+    box.querySelectorAll('img.pv,video,audio').forEach(e => e.remove());
+    if (mode === 'image') { const img = new Image(); img.className = 'pv'; img.alt = n.name; img.onload = () => box.classList.add('has-pv'); img.src = url; box.appendChild(img); }
+    else { const m = document.createElement(mode); m.controls = true; m.src = url; m.className = 'pv-media'; box.classList.add('has-pv'); box.appendChild(m); m.play().catch(() => { }); }
+  } catch (e) { if (e.status !== 401) toast(errText(e), 'close', true); }
+  finally { box.classList.remove('loading'); }
+}
+
 /* ---------- file drawer ---------- */
 let drawerNode = null, drawerFrom = null, dlBusy = false;
 function openDrawer(n, from) {
   drawerNode = n; drawerFrom = from;
   const k = kindOf(n.name, true), h = hash(n.name) % 360, ch = chunksOf(n.size), ext = (n.name.includes('.') ? n.name.split('.').pop() : '').toUpperCase(), st = S.store, d = $('#drawer');
+  const media = (k === 'video' || k === 'audio') && n.size <= MEDIA_MAX;
   d.innerHTML = `<div class="dr-h"><span class="chip">Файл</span><button class="icon-btn" type="button" id="dr-x" aria-label="Закрыть"><span class="ms" aria-hidden="true">close</span></button></div>
   <div class="thumb k-${k}" style="--h:${h}"><span class="ms" aria-hidden="true">${ICON[k]}</span>${(k === 'image' || k === 'video') && ext ? `<span class="badge">${esc(ext)}</span>` : ''}</div>
   <h2 class="dr-title">${esc(n.name)}</h2>
   <dl class="facts"><div><dt>Размер</dt><dd>${fmtSize(n.size)}</dd></div><div><dt>Куски</dt><dd>${ch === 1 ? '1 кусок' : `${ch} × 20 МБ`}</dd></div><div class="wide"><dt>Путь</dt><dd>${esc([st.name, ...segs(n.path)].join(' / '))}</dd></div><div class="wide"><dt>Канал</dt><dd>${chatLabel(st.chat_id)}</dd></div></dl>
   <div class="dr-sec"><div class="dr-sec-h"><span>Карта кусков</span><span id="dl-state">${ch} ${plural(ch, W_CHUNK)} в канале</span></div><div class="cmap big" id="dmap">${Array.from({ length: Math.min(ch, 400) }, (_, i) => `<i title="Кусок ${i + 1}"></i>`).join('')}</div></div>
-  <div class="dr-actions"><button class="btn primary" type="button" id="dl"><span class="ms" aria-hidden="true">download</span><span id="dl-l">Скачать</span></button><button class="btn danger" type="button" id="rm"><span class="ms" aria-hidden="true">delete</span>Удалить</button></div>
+  <div class="dr-actions">${media ? `<button class="btn" type="button" id="play"><span class="ms" aria-hidden="true">${k === 'video' ? 'movie' : 'music_note'}</span>${k === 'video' ? 'Смотреть' : 'Слушать'}</button>` : ''}<button class="btn primary" type="button" id="dl"><span class="ms" aria-hidden="true">download</span><span id="dl-l">Скачать</span></button><button class="btn danger" type="button" id="rm"><span class="ms" aria-hidden="true">delete</span>Удалить</button></div>
   <div class="confirm" id="confirm" hidden><p>Удалить «${esc(n.name)}»? Файл пропадёт из хранилища, а его куски останутся в канале Telegram.</p><p class="err" hidden></p><div class="actions"><button class="btn" type="button" id="rm-no">Отмена</button><button class="btn danger solid" type="button" id="rm-yes">Удалить</button></div></div>`;
   d.inert = false; d.classList.add('on');
   $('#dr-x').addEventListener('click', closeDrawer);
   $('#dl').addEventListener('click', () => doDownload(n));
+  if (media) $('#play').addEventListener('click', e => { e.currentTarget.remove(); showInDrawer(n, k); });
+  if (k === 'image' && !noPreview(n.name) && n.size <= 20 * MB) showInDrawer(n, 'image');
   $('#rm').addEventListener('click', () => { $('#confirm').hidden = false; $('#rm-yes').focus(); });
   $('#rm-no').addEventListener('click', () => { $('#confirm').hidden = true; });
   $('#rm-yes').addEventListener('click', e => busy(e.currentTarget, async () => {

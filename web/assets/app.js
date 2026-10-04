@@ -18,10 +18,12 @@ const keep = {
 };
 const isDarkNow = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches; };
 const restart = el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; };
+// html.booting: the first screen is still being prepared behind the loading screen.
+const booting = () => document.documentElement.classList.contains('booting');
 // Entrance motion is opt-in and skipped during the initial load, so the first frame never moves.
 const EASE = 'cubic-bezier(.22,1,.36,1)';
 function enter(el, from, opts = {}) {
-  if (!el || reduced.matches || document.documentElement.classList.contains('booting') || !el.animate) return;
+  if (!el || reduced.matches || booting() || !el.animate) return;
   el.animate([{ transform: from }, { transform: 'none' }], { duration: 600, easing: EASE, fill: 'backwards', ...opts });
 }
 // Channel ids are stored by Pentaract without the -100 prefix; people copy them with it.
@@ -113,7 +115,8 @@ function toast(msg, icon = 'check', bad = false) {
 }
 function countTo(el, to, fmt) {
   const from = +el.dataset.v || 0; el.dataset.v = to;
-  if (reduced.matches || from === to || document.hidden) { el.textContent = fmt(to); return; }
+  // Count up only where someone can see it; behind the loading or login screen the number is just set.
+  if (reduced.matches || from === to || document.hidden || booting() || getComputedStyle(el).visibility !== 'visible') { el.textContent = fmt(to); return; }
   setTimeout(() => { if (+el.dataset.v === to) el.textContent = fmt(to); }, 900);
   const s = performance.now();
   (function f(n) { const k = Math.min(1, (n - s) / 800), e = 1 - Math.pow(1 - k, 3); el.textContent = fmt(from + (to - from) * e); if (k < 1) requestAnimationFrame(f); })(s);
@@ -124,6 +127,12 @@ function fieldErr(form, inp, msg) {
 }
 function clearErr(form) { const e = form.querySelector('.err'); if (e) e.hidden = true; $$('[aria-invalid]', form).forEach(i => i.removeAttribute('aria-invalid')); }
 document.addEventListener('input', e => { const f = e.target.closest('form'); if (!f) return; e.target.removeAttribute('aria-invalid'); const er = f.querySelector('.err'); if (er) er.hidden = true; });
+// Resolves once the web fonts needed by the laid-out page have loaded (or after `ms`), so text never changes font in view.
+function fontsSettled(ms) {
+  if (!document.fonts || !document.fonts.ready) return Promise.resolve();
+  void document.body.offsetWidth; // lay the page out now so the fonts it needs start loading
+  return Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, ms))]);
+}
 async function busy(btn, fn) {
   if (btn.classList.contains('busy')) return;
   const html = btn.innerHTML; btn.classList.add('busy'); btn.innerHTML = '<span class="spin" aria-hidden="true"></span>' + btn.textContent.trim();
@@ -171,7 +180,8 @@ const sky=(()=>{
   addEventListener('pointermove',e=>{tx=e.clientX/(W||1)-.5;ty=e.clientY/(H||1)-.5},{passive:true});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAnimationFrame(raf);else start()});
   if(reduced.addEventListener)reduced.addEventListener('change',start);
-  return{init(){resize();colors();start()},colors,mode(m){mode=m;if(reduced.matches)draw(9)}};
+  // Start at the pose of the first screen (no fly-in on load) and paint the first frame right away.
+  return{init(m){resize();colors();mode=m;Object.assign(now,(W<880?NARROW:MODES)[m]);draw(reduced.matches?9:(performance.now()-t0)/1000*.6);start()},colors,mode(m){mode=m;if(reduced.matches)draw(9)}};
 })();
 
 
@@ -226,7 +236,7 @@ async function loadStores() {
   let known = [];
   try { known = JSON.parse(keep.get(knownKey()) || '[]'); } catch (e) { }
   for (const id of known.filter(id => !list.some(s => s.id === id))) {
-    try { const s = await API.storage(id); if (s) list.push({ ...s, size: 0, files_amount: 0 }); } catch (e) { if (e.status === 401) return; }
+    try { const s = await API.storage(id); if (s) list.push({ ...s, size: 0, files_amount: 0 }); } catch (e) { if (e.status === 401) throw e; }
   }
   S.stores = list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   keep.set(knownKey(), JSON.stringify(S.stores.map(s => s.id)));
@@ -273,9 +283,11 @@ function showSection(sec, push = true) {
   $$('#nav button').forEach(b => b.classList.toggle('is-active', b.dataset.sec === sec));
   $$('.store').forEach(b => b.classList.toggle('is-active', sec === 'files' && !!S.store && b.dataset.id === S.store.id));
   movePill(); closeDrawer();
+  let job;
   if (sec === 'bots') { setHash('#/bots', push); renderBots(); loadWorkers().then(renderBots); }
-  if (sec === 'people') { setHash(hashFor('people', S.peopleStore), push); renderPeople(); }
-  scrollTo({ top: 0, behavior: reduced.matches ? 'auto' : 'smooth' });
+  if (sec === 'people') { setHash(hashFor('people', S.peopleStore), push); job = renderPeople(); }
+  scrollTo({ top: 0, behavior: reduced.matches || booting() ? 'auto' : 'smooth' });
+  return job;
 }
 
 /* ---------- files ---------- */
@@ -352,11 +364,13 @@ function renderFiles(quiet = false) {
     return;
   }
   g.innerHTML = items.map((n, i) => cardHTML(n, i)).join('');
+  wireThumbs();
 }
 function highlight(path) { const el = $$('.card').find(c => c.dataset.path === path); if (el) { el.classList.add('fresh'); el.scrollIntoView({ block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' }); } }
 $('#grid').addEventListener('click', e => {
   const go = e.target.closest('[data-go]'); if (go) { showSection(go.dataset.go); return; }
   if (e.target.closest('[data-act="new-store"]')) { openStoreModal(); return; }
+  if (e.target.closest('[data-act="reload"]')) { location.reload(); return; }
   const c = e.target.closest('.card'); if (!c) return;
   const n = S.items.find(x => x.path === c.dataset.path); if (!n) return;
   if (!n.is_file) openStore(S.store, n.path); else openDrawer(n, c);
@@ -376,21 +390,79 @@ function confirmFolderDelete() {
   });
 }
 
+
+/* ---------- previews: real thumbnails for small images, played media in the drawer ---------- */
+// Every download costs Telegram requests (rate-limited per bot), so thumbnails load one at a
+// time, only when visible, never during uploads, and are kept in the browser's Cache Storage.
+const THUMB_MAX = 10 * MB, MEDIA_MAX = 100 * MB;
+const noPreview = name => /\.(heic|heif|tif|tiff|raw|cr2|nef|psd)$/i.test(name);
+const previewable = n => n.is_file && kindOf(n.name) === 'image' && !noPreview(n.name) && n.size <= THUMB_MAX;
+const previewUrls = new Map();
+const pkey = (sid, n) => `${sid}|${n.path}|${n.size}`;
+async function cacheGet(key) { try { const c = await caches.open('pentaract-previews'), r = await c.match('/__preview/' + encodeURIComponent(key)); return r ? await r.blob() : null; } catch (e) { return null; } }
+async function cachePut(key, blob) { try { const c = await caches.open('pentaract-previews'); await c.put('/__preview/' + encodeURIComponent(key), new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } })); } catch (e) { } }
+async function getPreview(sid, n) {
+  const key = pkey(sid, n); if (previewUrls.has(key)) return previewUrls.get(key);
+  const persist = n.size <= THUMB_MAX;
+  let blob = persist ? await cacheGet(key) : null;
+  if (!blob) { blob = await (await API.download(sid, n.path)).blob(); if (persist && blob.size) cachePut(key, blob); }
+  const url = URL.createObjectURL(blob); previewUrls.set(key, url); return url;
+}
+function clearPreviews() { previewUrls.forEach(u => URL.revokeObjectURL(u)); previewUrls.clear(); }
+const thumbQ = []; let thumbBusy = false;
+const thumbObs = 'IntersectionObserver' in window ? new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { thumbObs.unobserve(e.target); thumbQ.push(e.target); pumpThumbs(); } }), { rootMargin: '200px' }) : null;
+function setThumb(card, url) {
+  const t = card.querySelector('.thumb'); if (!t || t.querySelector('img.pv')) return;
+  const img = new Image(); img.className = 'pv'; img.alt = ''; img.decoding = 'async';
+  img.onload = () => t.classList.add('has-pv'); img.src = url; t.appendChild(img);
+}
+async function pumpThumbs() {
+  if (thumbBusy || !thumbQ.length) return;
+  if (typeof upActive !== 'undefined' && (upActive || ups.length)) { setTimeout(pumpThumbs, 3000); return; }
+  const card = thumbQ.shift(); if (!card.isConnected) return pumpThumbs();
+  thumbBusy = true;
+  try { const n = S.items.find(x => x.path === card.dataset.path); if (n && S.store) { const url = await getPreview(S.store.id, n); if (card.isConnected) setThumb(card, url); } }
+  catch (e) { } finally { thumbBusy = false; pumpThumbs(); }
+}
+function wireThumbs() {
+  if (!thumbObs || !S.store) return;
+  thumbObs.disconnect(); thumbQ.length = 0;
+  for (const c of $$('.card')) {
+    const n = S.items.find(x => x.path === c.dataset.path); if (!n || !previewable(n)) continue;
+    const url = previewUrls.get(pkey(S.store.id, n)); if (url) setThumb(c, url); else thumbObs.observe(c);
+  }
+}
+async function showInDrawer(n, mode) {
+  const st = S.store, box = $('#drawer .thumb'); if (!box) return;
+  box.classList.add('loading');
+  try {
+    const url = await getPreview(st.id, n);
+    if (drawerNode !== n) return;
+    box.querySelectorAll('img.pv,video,audio').forEach(e => e.remove());
+    if (mode === 'image') { const img = new Image(); img.className = 'pv'; img.alt = n.name; img.onload = () => box.classList.add('has-pv'); img.src = url; box.appendChild(img); }
+    else { const m = document.createElement(mode); m.controls = true; m.src = url; m.className = 'pv-media'; box.classList.add('has-pv'); box.appendChild(m); m.play().catch(() => { }); }
+  } catch (e) { if (e.status !== 401) toast(errText(e), 'close', true); }
+  finally { box.classList.remove('loading'); }
+}
+
 /* ---------- file drawer ---------- */
 let drawerNode = null, drawerFrom = null, dlBusy = false;
 function openDrawer(n, from) {
   drawerNode = n; drawerFrom = from;
   const k = kindOf(n.name, true), h = hash(n.name) % 360, ch = chunksOf(n.size), ext = (n.name.includes('.') ? n.name.split('.').pop() : '').toUpperCase(), st = S.store, d = $('#drawer');
+  const media = (k === 'video' || k === 'audio') && n.size <= MEDIA_MAX;
   d.innerHTML = `<div class="dr-h"><span class="chip">Файл</span><button class="icon-btn" type="button" id="dr-x" aria-label="Закрыть"><span class="ms" aria-hidden="true">close</span></button></div>
   <div class="thumb k-${k}" style="--h:${h}"><span class="ms" aria-hidden="true">${ICON[k]}</span>${(k === 'image' || k === 'video') && ext ? `<span class="badge">${esc(ext)}</span>` : ''}</div>
   <h2 class="dr-title">${esc(n.name)}</h2>
   <dl class="facts"><div><dt>Размер</dt><dd>${fmtSize(n.size)}</dd></div><div><dt>Куски</dt><dd>${ch === 1 ? '1 кусок' : `${ch} × 20 МБ`}</dd></div><div class="wide"><dt>Путь</dt><dd>${esc([st.name, ...segs(n.path)].join(' / '))}</dd></div><div class="wide"><dt>Канал</dt><dd>${chatLabel(st.chat_id)}</dd></div></dl>
   <div class="dr-sec"><div class="dr-sec-h"><span>Карта кусков</span><span id="dl-state">${ch} ${plural(ch, W_CHUNK)} в канале</span></div><div class="cmap big" id="dmap">${Array.from({ length: Math.min(ch, 400) }, (_, i) => `<i title="Кусок ${i + 1}"></i>`).join('')}</div></div>
-  <div class="dr-actions"><button class="btn primary" type="button" id="dl"><span class="ms" aria-hidden="true">download</span><span id="dl-l">Скачать</span></button><button class="btn danger" type="button" id="rm"><span class="ms" aria-hidden="true">delete</span>Удалить</button></div>
+  <div class="dr-actions">${media ? `<button class="btn" type="button" id="play"><span class="ms" aria-hidden="true">${k === 'video' ? 'movie' : 'music_note'}</span>${k === 'video' ? 'Смотреть' : 'Слушать'}</button>` : ''}<button class="btn primary" type="button" id="dl"><span class="ms" aria-hidden="true">download</span><span id="dl-l">Скачать</span></button><button class="btn danger" type="button" id="rm"><span class="ms" aria-hidden="true">delete</span>Удалить</button></div>
   <div class="confirm" id="confirm" hidden><p>Удалить «${esc(n.name)}»? Файл пропадёт из хранилища, а его куски останутся в канале Telegram.</p><p class="err" hidden></p><div class="actions"><button class="btn" type="button" id="rm-no">Отмена</button><button class="btn danger solid" type="button" id="rm-yes">Удалить</button></div></div>`;
   d.inert = false; d.classList.add('on');
   $('#dr-x').addEventListener('click', closeDrawer);
   $('#dl').addEventListener('click', () => doDownload(n));
+  if (media) $('#play').addEventListener('click', e => { e.currentTarget.remove(); showInDrawer(n, k); });
+  if (k === 'image' && !noPreview(n.name) && n.size <= 20 * MB) showInDrawer(n, 'image');
   $('#rm').addEventListener('click', () => { $('#confirm').hidden = false; $('#rm-yes').focus(); });
   $('#rm-no').addEventListener('click', () => { $('#confirm').hidden = true; });
   $('#rm-yes').addEventListener('click', e => busy(e.currentTarget, async () => {
@@ -622,13 +694,17 @@ function renderSpeed() {
   const n = S.workers.filter(w => w.storage_id === st.id).length;
   box.innerHTML = `<small>Скорость «${esc(st.name)}»</small><b>${n ? `до ${fmtSize(n * 360 * MB)}/мин` : 'нет ботов'}</b><span>${n ? `${n} ${plural(n, W_BOT)} · скачивание до ${fmtSize(n * 180 * MB)}/мин` : 'Добавь бота, чтобы загружать файлы'}</span>`;
 }
+let botsHTML = '';
 function renderBots() {
   const box = $('#bots');
-  if (!S.workers.length) box.innerHTML = `<div class="empty glass" style="grid-column:1/-1"><span class="ms" aria-hidden="true">smart_toy</span><h3>Ботов пока нет</h3><p>Добавь первого бота ниже. Без бота файлы не смогут уйти в канал.</p></div>`;
-  else box.innerHTML = S.workers.map((w, i) => {
+  let html;
+  if (!S.workers.length) html = `<div class="empty glass" style="grid-column:1/-1"><span class="ms" aria-hidden="true">smart_toy</span><h3>Ботов пока нет</h3><p>Добавь первого бота ниже. Без бота файлы не смогут уйти в канал.</p></div>`;
+  else html = S.workers.map((w, i) => {
     const st = S.stores.find(s => s.id === w.storage_id);
     return `<article class="bot glass" style="--i:${i}"><div class="bot-h"><span class="bot-av"><span class="ms" aria-hidden="true">smart_toy</span></span><div class="t"><div class="bot-n">${esc(w.name)}</div><div class="bot-u">id ${esc(String(w.token || '').split(':')[0])}</div></div><span class="live"><i></i>подключён</span></div><div class="bot-f"><span class="ms" aria-hidden="true">database</span>${st ? esc(st.name) : '<span class="warn">не привязан к хранилищу</span>'}</div></article>`;
   }).join('');
+  // Redrawing the same cards would replay their entrance; cards drawn behind the loading screen don't animate at all.
+  if (html !== botsHTML) { botsHTML = html; box.classList.toggle('quiet', booting()); box.innerHTML = html; }
   renderSpeed();
 }
 $('#f-bot').addEventListener('submit', e => {
@@ -657,6 +733,7 @@ async function renderPeople() {
     const users = (await API.access(id)) || [];
     if (S.peopleStore !== id) return;
     const me = S.me && S.me.email;
+    box.classList.toggle('quiet', booting());
     box.innerHTML = users.map((u, i) => `<div class="person" style="--i:${i}"><span class="av">${esc((u.email[0] || '?').toUpperCase())}</span><span class="t"><span class="n">${esc(u.email)}</span>${u.email === me ? '<span class="you">это ты</span>' : ''}</span><span class="roles"><span class="role r-${String(u.access_type).toLowerCase()}">${ROLE[u.access_type] || u.access_type}</span></span>${u.email !== me ? `<button class="icon-btn revoke" type="button" data-uid="${esc(u.id)}" data-email="${esc(u.email)}" aria-label="Забрать доступ у ${esc(u.email)}"><span class="ms" aria-hidden="true">person_remove</span></button>` : ''}</div>`).join('') || '<div class="people-empty">Пока ни у кого нет доступа.</div>';
   } catch (e) { if (e.status !== 401 && S.peopleStore === id) box.innerHTML = `<div class="people-empty">${esc(errText(e, 'access'))}</div>`; }
 }
@@ -679,33 +756,42 @@ $('#f-access').addEventListener('submit', e => {
 });
 
 /* ---------- login ---------- */
-$('#lt').innerHTML = [...'Pentaract'].map((c, i) => `<span style="--i:${i}" aria-hidden="true">${c}</span>`).join('');
 function showLogin() {
   S.authed = false; closeDrawer(); closeModal(); document.body.classList.add('locked');
   const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving');
   enter(card, 'translateY(26px) scale(.96)', { duration: 900 });
   $$('#lt span').forEach((sp, i) => enter(sp, 'translateY(.6em) rotate(8deg)', { duration: 900, delay: 150 + i * 45, easing: 'cubic-bezier(.34,1.56,.64,1)' }));
-  sky.mode('login'); setTimeout(() => $('#l-email').value ? $('#l-pass').focus() : $('#l-email').focus(), 300);
+  sky.mode('login'); if (!booting()) setTimeout(focusLogin, 300);
 }
+function focusLogin() { ($('#l-email').value ? $('#l-pass') : $('#l-email')).focus({ preventScroll: true }); }
 async function enterApp(instant = false) {
   S.me = auth.claims() || {};
   const mail = S.me.email || '';
   $('#me-av').textContent = (mail[0] || '?').toUpperCase(); $('#me-name').textContent = mail.split('@')[0] || 'Аккаунт'; $('#me-mail').textContent = mail;
   S.authed = true;
   await Promise.all([loadStores(), loadWorkers()]);
-  sky.mode('app');
-  await route(parseHash(), false, instant);
-  // The app is fully rendered behind the scenes; now reveal it in one step.
-  if (!instant) { $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
+  // The first page is rendered behind the scenes (no skeletons, no entrance motion), then shown complete.
+  if (S.authed) await route(parseHash(), false, true);
+  if (!S.authed) return;
+  if (!instant) { sky.mode('app'); $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
   $('#login').hidden = true; document.body.classList.remove('locked');
   movePill();
+  if (!instant) enter($('#shell'), 'translateY(18px) scale(.985)', { duration: 900 });
+}
+// The server could not be reached on load: keep the session and offer a retry instead of signing out.
+function bootFailed(e) {
+  $('#login').hidden = true; document.body.classList.remove('locked');
+  S.store = null; showSection('files', false);
+  $('#crumbs').innerHTML = ''; $('#title').textContent = 'Нет связи'; $('#sub').textContent = '';
+  $('#grid').innerHTML = `<div class="empty glass"><span class="ms" aria-hidden="true">close</span><h3>Не получилось загрузить</h3><p>${esc(errText(e))}</p><button class="btn primary" type="button" data-act="reload">Повторить</button></div>`;
 }
 function logout(message) {
-  auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {};
+  auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {}; clearPreviews();
   ups.splice(0).forEach(j => finishJob(j, 'cancel'));
   showLogin(); if (message) toast(message, 'lock', true);
 }
-onUnauthorized = () => { if (S.authed) logout('Сессия закончилась. Войди снова'); };
+// On load an expired session just shows the login form; later it also says why.
+onUnauthorized = () => { if (S.authed) logout(booting() ? '' : 'Сессия закончилась. Войди снова'); };
 $('#logout').addEventListener('click', () => { if ((upActive || ups.length)) { toast('Дождись окончания загрузки', 'upload', true); return; } logout(); history.replaceState(null, '', '#/'); });
 $('#f-login').addEventListener('submit', e => {
   e.preventDefault(); const f = e.currentTarget, ei = $('#l-email'), pi = $('#l-pass'), go = $('#l-go');
@@ -736,24 +822,32 @@ addEventListener('resize', movePill);
 
 /* ---------- start ---------- */
 // Icons come from a web font; hide the ligature words until it has loaded (or give up after 4s).
-(function iconsReady() {
+const iconsCheck = (() => {
   const root = document.documentElement, done = () => root.classList.add('icons-ready');
   const ok = () => { try { return [...document.fonts].some(f => f.family.includes('Material Symbols') && f.status === 'loaded'); } catch (e) { return true; } };
-  if (!document.fonts || ok()) return done();
-  document.fonts.addEventListener('loadingdone', () => { if (ok()) done(); });
-  setTimeout(done, 4000);
+  const check = () => { if (ok()) done(); };
+  if (!document.fonts) done(); else { document.fonts.addEventListener('loadingdone', check); check(); setTimeout(done, 4000); }
+  return check;
 })();
+// Show the first screen in one step: fonts and icons in place, no transitions, the login field already focused.
+async function reveal() {
+  await fontsSettled(1000); iconsCheck();
+  document.documentElement.classList.remove('booting');
+  if (!S.authed) { const i = $('#l-email').value ? $('#l-pass') : $('#l-email'); i.style.transition = 'none'; focusLogin(); void i.offsetWidth; i.style.transition = ''; }
+}
 
 (async function boot() {
-  const p = keep.get('palette'), t = keep.get('theme');
-  if (p && p !== 'telegram') setPalette(p);
-  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  // Theme and palette were already applied by the inline script in <head>; this syncs the controls.
+  const p = keep.get('palette'), t = keep.get('theme'), signedIn = auth.valid();
+  if (p === 'aurora' || p === 'sunset') setPalette(p);
+  if ((t === 'light' || t === 'dark') && document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
   $('#v-grid').setAttribute('aria-pressed', S.view === 'grid'); $('#v-list').setAttribute('aria-pressed', S.view === 'list');
-  syncThemeBtn(); sky.init();
+  syncThemeBtn(); sky.init(signedIn ? 'app' : 'login');
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(movePill);
-  const ready = () => document.documentElement.classList.remove('booting');
-  if (auth.valid()) {
-    try { await enterApp(true); ready(); return; } catch (e) { auth.clear(); }
-  } else auth.clear();
-  showLogin(); ready();
+  if (signedIn) {
+    // A 401 has already switched to the login form; any other failure keeps the session.
+    try { await enterApp(true); } catch (e) { if (S.authed) bootFailed(e); }
+  } else { auth.clear(); showLogin(); }
+  reveal();
 })();

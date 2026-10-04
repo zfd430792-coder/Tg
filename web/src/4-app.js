@@ -174,13 +174,17 @@ function renderSpeed() {
   const n = S.workers.filter(w => w.storage_id === st.id).length;
   box.innerHTML = `<small>Скорость «${esc(st.name)}»</small><b>${n ? `до ${fmtSize(n * 360 * MB)}/мин` : 'нет ботов'}</b><span>${n ? `${n} ${plural(n, W_BOT)} · скачивание до ${fmtSize(n * 180 * MB)}/мин` : 'Добавь бота, чтобы загружать файлы'}</span>`;
 }
+let botsHTML = '';
 function renderBots() {
   const box = $('#bots');
-  if (!S.workers.length) box.innerHTML = `<div class="empty glass" style="grid-column:1/-1"><span class="ms" aria-hidden="true">smart_toy</span><h3>Ботов пока нет</h3><p>Добавь первого бота ниже. Без бота файлы не смогут уйти в канал.</p></div>`;
-  else box.innerHTML = S.workers.map((w, i) => {
+  let html;
+  if (!S.workers.length) html = `<div class="empty glass" style="grid-column:1/-1"><span class="ms" aria-hidden="true">smart_toy</span><h3>Ботов пока нет</h3><p>Добавь первого бота ниже. Без бота файлы не смогут уйти в канал.</p></div>`;
+  else html = S.workers.map((w, i) => {
     const st = S.stores.find(s => s.id === w.storage_id);
     return `<article class="bot glass" style="--i:${i}"><div class="bot-h"><span class="bot-av"><span class="ms" aria-hidden="true">smart_toy</span></span><div class="t"><div class="bot-n">${esc(w.name)}</div><div class="bot-u">id ${esc(String(w.token || '').split(':')[0])}</div></div><span class="live"><i></i>подключён</span></div><div class="bot-f"><span class="ms" aria-hidden="true">database</span>${st ? esc(st.name) : '<span class="warn">не привязан к хранилищу</span>'}</div></article>`;
   }).join('');
+  // Redrawing the same cards would replay their entrance; cards drawn behind the loading screen don't animate at all.
+  if (html !== botsHTML) { botsHTML = html; box.classList.toggle('quiet', booting()); box.innerHTML = html; }
   renderSpeed();
 }
 $('#f-bot').addEventListener('submit', e => {
@@ -209,6 +213,7 @@ async function renderPeople() {
     const users = (await API.access(id)) || [];
     if (S.peopleStore !== id) return;
     const me = S.me && S.me.email;
+    box.classList.toggle('quiet', booting());
     box.innerHTML = users.map((u, i) => `<div class="person" style="--i:${i}"><span class="av">${esc((u.email[0] || '?').toUpperCase())}</span><span class="t"><span class="n">${esc(u.email)}</span>${u.email === me ? '<span class="you">это ты</span>' : ''}</span><span class="roles"><span class="role r-${String(u.access_type).toLowerCase()}">${ROLE[u.access_type] || u.access_type}</span></span>${u.email !== me ? `<button class="icon-btn revoke" type="button" data-uid="${esc(u.id)}" data-email="${esc(u.email)}" aria-label="Забрать доступ у ${esc(u.email)}"><span class="ms" aria-hidden="true">person_remove</span></button>` : ''}</div>`).join('') || '<div class="people-empty">Пока ни у кого нет доступа.</div>';
   } catch (e) { if (e.status !== 401 && S.peopleStore === id) box.innerHTML = `<div class="people-empty">${esc(errText(e, 'access'))}</div>`; }
 }
@@ -231,33 +236,42 @@ $('#f-access').addEventListener('submit', e => {
 });
 
 /* ---------- login ---------- */
-$('#lt').innerHTML = [...'Pentaract'].map((c, i) => `<span style="--i:${i}" aria-hidden="true">${c}</span>`).join('');
 function showLogin() {
   S.authed = false; closeDrawer(); closeModal(); document.body.classList.add('locked');
   const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving');
   enter(card, 'translateY(26px) scale(.96)', { duration: 900 });
   $$('#lt span').forEach((sp, i) => enter(sp, 'translateY(.6em) rotate(8deg)', { duration: 900, delay: 150 + i * 45, easing: 'cubic-bezier(.34,1.56,.64,1)' }));
-  sky.mode('login'); setTimeout(() => $('#l-email').value ? $('#l-pass').focus() : $('#l-email').focus(), 300);
+  sky.mode('login'); if (!booting()) setTimeout(focusLogin, 300);
 }
+function focusLogin() { ($('#l-email').value ? $('#l-pass') : $('#l-email')).focus({ preventScroll: true }); }
 async function enterApp(instant = false) {
   S.me = auth.claims() || {};
   const mail = S.me.email || '';
   $('#me-av').textContent = (mail[0] || '?').toUpperCase(); $('#me-name').textContent = mail.split('@')[0] || 'Аккаунт'; $('#me-mail').textContent = mail;
   S.authed = true;
   await Promise.all([loadStores(), loadWorkers()]);
-  sky.mode('app');
-  await route(parseHash(), false, instant);
-  // The app is fully rendered behind the scenes; now reveal it in one step.
-  if (!instant) { $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
+  // The first page is rendered behind the scenes (no skeletons, no entrance motion), then shown complete.
+  if (S.authed) await route(parseHash(), false, true);
+  if (!S.authed) return;
+  if (!instant) { sky.mode('app'); $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
   $('#login').hidden = true; document.body.classList.remove('locked');
   movePill();
+  if (!instant) enter($('#shell'), 'translateY(18px) scale(.985)', { duration: 900 });
+}
+// The server could not be reached on load: keep the session and offer a retry instead of signing out.
+function bootFailed(e) {
+  $('#login').hidden = true; document.body.classList.remove('locked');
+  S.store = null; showSection('files', false);
+  $('#crumbs').innerHTML = ''; $('#title').textContent = 'Нет связи'; $('#sub').textContent = '';
+  $('#grid').innerHTML = `<div class="empty glass"><span class="ms" aria-hidden="true">close</span><h3>Не получилось загрузить</h3><p>${esc(errText(e))}</p><button class="btn primary" type="button" data-act="reload">Повторить</button></div>`;
 }
 function logout(message) {
-  auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {};
+  auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {}; clearPreviews();
   ups.splice(0).forEach(j => finishJob(j, 'cancel'));
   showLogin(); if (message) toast(message, 'lock', true);
 }
-onUnauthorized = () => { if (S.authed) logout('Сессия закончилась. Войди снова'); };
+// On load an expired session just shows the login form; later it also says why.
+onUnauthorized = () => { if (S.authed) logout(booting() ? '' : 'Сессия закончилась. Войди снова'); };
 $('#logout').addEventListener('click', () => { if ((upActive || ups.length)) { toast('Дождись окончания загрузки', 'upload', true); return; } logout(); history.replaceState(null, '', '#/'); });
 $('#f-login').addEventListener('submit', e => {
   e.preventDefault(); const f = e.currentTarget, ei = $('#l-email'), pi = $('#l-pass'), go = $('#l-go');
@@ -288,24 +302,32 @@ addEventListener('resize', movePill);
 
 /* ---------- start ---------- */
 // Icons come from a web font; hide the ligature words until it has loaded (or give up after 4s).
-(function iconsReady() {
+const iconsCheck = (() => {
   const root = document.documentElement, done = () => root.classList.add('icons-ready');
   const ok = () => { try { return [...document.fonts].some(f => f.family.includes('Material Symbols') && f.status === 'loaded'); } catch (e) { return true; } };
-  if (!document.fonts || ok()) return done();
-  document.fonts.addEventListener('loadingdone', () => { if (ok()) done(); });
-  setTimeout(done, 4000);
+  const check = () => { if (ok()) done(); };
+  if (!document.fonts) done(); else { document.fonts.addEventListener('loadingdone', check); check(); setTimeout(done, 4000); }
+  return check;
 })();
+// Show the first screen in one step: fonts and icons in place, no transitions, the login field already focused.
+async function reveal() {
+  await fontsSettled(1000); iconsCheck();
+  document.documentElement.classList.remove('booting');
+  if (!S.authed) { const i = $('#l-email').value ? $('#l-pass') : $('#l-email'); i.style.transition = 'none'; focusLogin(); void i.offsetWidth; i.style.transition = ''; }
+}
 
 (async function boot() {
-  const p = keep.get('palette'), t = keep.get('theme');
-  if (p && p !== 'telegram') setPalette(p);
-  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  // Theme and palette were already applied by the inline script in <head>; this syncs the controls.
+  const p = keep.get('palette'), t = keep.get('theme'), signedIn = auth.valid();
+  if (p === 'aurora' || p === 'sunset') setPalette(p);
+  if ((t === 'light' || t === 'dark') && document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
   $('#v-grid').setAttribute('aria-pressed', S.view === 'grid'); $('#v-list').setAttribute('aria-pressed', S.view === 'list');
-  syncThemeBtn(); sky.init();
+  syncThemeBtn(); sky.init(signedIn ? 'app' : 'login');
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(movePill);
-  const ready = () => document.documentElement.classList.remove('booting');
-  if (auth.valid()) {
-    try { await enterApp(true); ready(); return; } catch (e) { auth.clear(); }
-  } else auth.clear();
-  showLogin(); ready();
+  if (signedIn) {
+    // A 401 has already switched to the login form; any other failure keeps the session.
+    try { await enterApp(true); } catch (e) { if (S.authed) bootFailed(e); }
+  } else { auth.clear(); showLogin(); }
+  reveal();
 })();

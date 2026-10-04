@@ -42,8 +42,7 @@ button,input,select{font:inherit;color:inherit}
 .glass{background:var(--glass);border:1px solid var(--edge);-webkit-backdrop-filter:blur(22px) saturate(150%);backdrop-filter:blur(22px) saturate(150%)}
 
 .shell{position:relative;z-index:1;display:grid;grid-template-columns:268px minmax(0,1fr);gap:18px;padding-block:18px;padding-inline:18px;max-width:1500px;margin:0 auto}
-.shell.entering{animation:shell-in .9s var(--ease) backwards}
-@keyframes shell-in{from{transform:translateY(18px) scale(.985)}}
+body.locked{overflow:hidden}
 body.locked .shell{visibility:hidden}
 
 .rail{position:sticky;top:calc(18px + env(safe-area-inset-top,0px));align-self:start;max-height:calc(100dvh - 36px);overflow:auto;border-radius:26px;padding:18px 12px 14px;display:flex;flex-direction:column;gap:20px;scrollbar-width:thin}
@@ -128,7 +127,7 @@ kbd{font:500 11px var(--mono);color:var(--faint);border:1px solid var(--edge-str
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:14px}
 .card{position:relative;display:flex;flex-direction:column;gap:10px;padding:10px;border-radius:20px;text-align:left;cursor:pointer;transition:translate .45s var(--spring),border-color .3s,background .3s;animation:rise .65s var(--ease) backwards;animation-delay:calc(var(--i,0) * 38ms)}
-.grid.quiet .card{animation:none}
+.grid.quiet .card,.bots.quiet .bot,.quiet>.person{animation:none}
 .card:hover{translate:0 -5px;border-color:var(--signal-line)}
 .card::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:radial-gradient(220px circle at var(--mx,50%) var(--my,0%),var(--signal-soft),transparent 65%);opacity:0;transition:opacity .35s}
 .card:hover::after{opacity:1}
@@ -201,8 +200,8 @@ kbd{font:500 11px var(--mono);color:var(--faint);border:1px solid var(--edge-str
 @keyframes pop{50%{transform:scale(1.45)}}
 .plane{position:fixed;left:0;top:0;z-index:60;margin:-10px 0 0 -10px;color:var(--signal);font-size:20px;pointer-events:none}
 
-.drawer{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));right:18px;bottom:calc(18px + env(safe-area-inset-bottom,0px));z-index:35;width:min(400px,calc(100% - 36px));border-radius:26px;background:var(--glass-strong);padding:18px;display:flex;flex-direction:column;gap:16px;overflow:auto;transform:translateX(calc(100% + 40px));transition:transform .6s var(--ease);box-shadow:0 30px 80px -24px var(--shade)}
-.drawer.on{transform:none}
+.drawer{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));right:18px;bottom:calc(18px + env(safe-area-inset-bottom,0px));z-index:35;width:min(400px,calc(100% - 36px));border-radius:26px;background:var(--glass-strong);padding:18px;display:flex;flex-direction:column;gap:16px;overflow:auto;transform:translateX(calc(100% + 40px));visibility:hidden;transition:transform .6s var(--ease),visibility 0s .6s;box-shadow:0 30px 80px -24px var(--shade)}
+.drawer.on{transform:none;visibility:visible;transition:transform .6s var(--ease)}
 .dr-h{display:flex;align-items:center;justify-content:space-between}
 .drawer .thumb{aspect-ratio:16/9}
 .drawer .thumb .ms{font-size:46px}
@@ -232,6 +231,8 @@ kbd{font:500 11px var(--mono);color:var(--faint);border:1px solid var(--edge-str
 .input:focus{border-color:var(--signal);box-shadow:0 0 0 4px var(--signal-soft)}
 .input.mono{font-family:var(--mono);font-size:14px}
 .input[aria-invalid="true"]{border-color:var(--danger);animation:shake .35s}
+/* Keep the browser's saved-password autofill from repainting the fields in its own colours a moment after load. */
+.input:-webkit-autofill{-webkit-text-fill-color:var(--ink);caret-color:var(--ink);transition:background-color 0s 600000s,color 0s 600000s!important}
 select.input{cursor:pointer}
 select.input option{background:var(--void);color:var(--ink)}
 @keyframes shake{25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
@@ -351,9 +352,20 @@ select.input option{background:var(--void);color:var(--ink)}
 .bot-f .warn{color:var(--danger)}
 .hint .mono{font-size:13px}
 .boot{position:fixed;inset:0;z-index:15;display:grid;place-items:center;color:var(--mist);font:500 13px var(--mono);letter-spacing:.1em;text-transform:uppercase}
-html:not(.icons-ready) .ms{visibility:hidden}
-/* Page is ready once this stylesheet applies: reveal it and drop the loading spinner. */
+/* Until the icon font is in, icons are invisible but already take their final 1em width, so nothing shifts when they appear. */
+html:not(.icons-ready) .ms{visibility:hidden;width:1em}
+/* The body shows once this stylesheet applies. Until the app has rendered its first screen (html.booting),
+   both screens stay hidden behind the loading spinner, which itself only appears if loading is slow. */
 body{visibility:visible;animation:none}
 html:not(.booting)::after{content:none;display:none}
+html.booting::after{border-color:var(--signal);border-right-color:transparent}
 html.booting #shell,html.booting #login{visibility:hidden!important}
 html.booting body *{transition:none!important}
+.thumb img.pv{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}
+.thumb.has-pv img.pv{opacity:1}
+.thumb.has-pv::before{display:none}
+.thumb .badge{z-index:1}
+.drawer .thumb img.pv{object-fit:contain;background:#000}
+.drawer .thumb .pv-media{position:absolute;inset:0;width:100%;height:100%;background:#000}
+.drawer .thumb audio.pv-media{top:auto;height:54px;background:transparent}
+.thumb.loading::after{content:"";position:absolute;width:26px;height:26px;border-radius:50%;border:2px solid #fff;border-right-color:transparent;animation:spin .8s linear infinite;z-index:2}

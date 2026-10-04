@@ -40,7 +40,8 @@ const sky=(()=>{
   addEventListener('pointermove',e=>{tx=e.clientX/(W||1)-.5;ty=e.clientY/(H||1)-.5},{passive:true});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAnimationFrame(raf);else start()});
   if(reduced.addEventListener)reduced.addEventListener('change',start);
-  return{init(){resize();colors();start()},colors,mode(m){mode=m;if(reduced.matches)draw(9)}};
+  // Start at the pose of the first screen (no fly-in on load) and paint the first frame right away.
+  return{init(m){resize();colors();mode=m;Object.assign(now,(W<880?NARROW:MODES)[m]);draw(reduced.matches?9:(performance.now()-t0)/1000*.6);start()},colors,mode(m){mode=m;if(reduced.matches)draw(9)}};
 })();
 
 

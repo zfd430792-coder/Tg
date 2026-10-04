@@ -5,17 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pentaract</title>
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<script>
+// Apply the saved theme and palette before the first paint, so the loading screen already has the right colours.
+(function(r){try{var t=localStorage.getItem('pentaract:theme'),p=localStorage.getItem('pentaract:palette');
+if(t==='light'||t==='dark')r.setAttribute('data-theme',t);if(p==='aurora'||p==='sunset')r.setAttribute('data-palette',p)}catch(e){}})(document.documentElement);
+</script>
 <style>
 html{background:#05080F;color-scheme:dark}
-@media (prefers-color-scheme:light){html{background:#ECF1F8;color-scheme:light}}
+@media (prefers-color-scheme:light){html:not([data-theme="dark"]){background:#ECF1F8;color-scheme:light}}
+html[data-theme="light"]{background:#ECF1F8;color-scheme:light}
 body{visibility:hidden;animation:p-reveal 0s 10s forwards}
 @keyframes p-reveal{to{visibility:visible}}
-html::after{content:"";position:fixed;left:50%;top:50%;width:28px;height:28px;margin:-14px 0 0 -14px;border:2px solid #40C4FF;border-right-color:transparent;border-radius:50%;animation:p-spin .8s linear infinite}
+html::after{content:"";position:fixed;left:50%;top:50%;width:28px;height:28px;margin:-14px 0 0 -14px;border:2px solid #40C4FF;border-right-color:transparent;border-radius:50%;visibility:hidden;animation:p-spin .8s linear infinite,p-reveal 0s .5s forwards}
+html[data-palette="aurora"]::after{border-color:#4BE3B0;border-right-color:transparent}
+html[data-palette="sunset"]::after{border-color:#FFB347;border-right-color:transparent}
 @keyframes p-spin{to{transform:rotate(360deg)}}
 </style>
 <link rel="preload" href="/assets/fonts/MaterialSymbolsRounded-icons-0ac385.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/Onest-cyrillic-4c7562.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/Onest-latin-cebbb5.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/Unbounded-latin-06f2e4.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/Unbounded-cyrillic-c86556.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/assets/fonts.css?v=3">
-<link rel="stylesheet" href="/assets/app.css?v=5">
+<link rel="stylesheet" href="/assets/app.css?v=6">
 </head>
 <body class="locked">
 <canvas id="sky" aria-hidden="true"></canvas>
@@ -115,7 +127,7 @@ html::after{content:"";position:fixed;left:50%;top:50%;width:28px;height:28px;ma
     <div class="brand">
       <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="30" height="30" rx="8"/><rect x="11" y="11" width="12" height="12" rx="3"/><path d="M4.4 4.4 11.6 11.6M29.6 4.4 22.4 11.6M4.4 29.6 11.6 22.4M29.6 29.6 22.4 22.4"/></svg>
     </div>
-    <h1 class="lt" id="lt" aria-label="Pentaract"></h1>
+    <h1 class="lt" id="lt" aria-label="Pentaract"><span style="--i:0" aria-hidden="true">P</span><span style="--i:1" aria-hidden="true">e</span><span style="--i:2" aria-hidden="true">n</span><span style="--i:3" aria-hidden="true">t</span><span style="--i:4" aria-hidden="true">a</span><span style="--i:5" aria-hidden="true">r</span><span style="--i:6" aria-hidden="true">a</span><span style="--i:7" aria-hidden="true">c</span><span style="--i:8" aria-hidden="true">t</span></h1>
     <p class="lead">Твоё облако внутри Telegram. Файлы хранятся кусками в приватном канале.</p>
     <div class="field"><label for="l-email">Почта</label><input class="input" id="l-email" type="email" autocomplete="username"></div>
     <div class="field"><label for="l-pass">Пароль</label><input class="input" id="l-pass" type="password" autocomplete="current-password"></div>
@@ -163,6 +175,6 @@ html::after{content:"";position:fixed;left:50%;top:50%;width:28px;height:28px;ma
 </div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/assets/app.js?v=5"></script>
+<script src="/assets/app.js?v=6"></script>
 </body>
 </html>
