@@ -1,0 +1,8 @@
+# local tooling
+.claude/
+
+# secrets and build output
+.env
+target/
+node_modules/
+dist/
