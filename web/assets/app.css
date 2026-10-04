@@ -87,7 +87,7 @@ body.locked .shell{visibility:hidden}
 .sw[aria-pressed="true"]{border-color:var(--ink);transform:scale(1.12)}
 
 .stage{min-width:0;display:flex;flex-direction:column;gap:18px}
-.view{display:flex;flex-direction:column;gap:18px;animation:view-in .6s var(--ease) backwards}
+.view{display:flex;flex-direction:column;gap:18px}
 @keyframes view-in{from{transform:translateY(14px)}}
 .topbar{position:sticky;top:calc(18px + env(safe-area-inset-top,0px));z-index:3;border-radius:22px;padding:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .search{flex:1 1 220px;display:flex;align-items:center;gap:10px;height:42px;padding:0 12px;border-radius:14px;background:var(--wash);border:1px solid transparent;color:var(--faint);transition:border-color .25s,background .25s}
@@ -117,7 +117,7 @@ kbd{font:500 11px var(--mono);color:var(--faint);border:1px solid var(--edge-str
 .crumbs button:hover{color:var(--ink);background:var(--wash)}
 .crumbs button[aria-current]{color:var(--ink)}
 .crumbs .ms{font-size:16px;color:var(--faint)}
-.vtitle{margin:0;font:700 clamp(28px,4.2vw,46px)/1.08 var(--display);letter-spacing:-.01em;text-wrap:balance;overflow-wrap:anywhere;animation:title-in .7s var(--ease) backwards}
+.vtitle{margin:0;font:700 clamp(28px,4.2vw,46px)/1.08 var(--display);letter-spacing:-.01em;text-wrap:balance;overflow-wrap:anywhere}
 @keyframes title-in{from{transform:translateY(14px)}}
 .sub{margin:10px 0 0;color:var(--mist);font-size:14px;max-width:62ch}
 .sub .mono{font-size:13px}
@@ -294,13 +294,13 @@ select.input option{background:var(--void);color:var(--ink)}
 .invite{animation:rise .5s var(--ease) backwards}
 
 .login{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:24px 16px;overflow:auto}
-.login-card{width:min(430px,100%);margin-top:16vh;border-radius:30px;padding:28px 26px 24px;display:flex;flex-direction:column;gap:16px;animation:card-in .9s var(--ease) backwards;box-shadow:0 40px 90px -30px var(--shade)}
+.login-card{width:min(430px,100%);margin-top:16vh;border-radius:30px;padding:28px 26px 24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 40px 90px -30px var(--shade)}
 .login-card.leaving{animation:card-out .55s var(--ease) forwards}
 @keyframes card-in{from{transform:translateY(26px) scale(.96)}}
 @keyframes card-out{to{opacity:0;transform:translateY(-18px) scale(.97);filter:blur(6px)}}
 .login .brand{padding:0;justify-content:space-between}
 .lt{margin:0;font:700 clamp(32px,8vw,44px)/1 var(--display);letter-spacing:-.01em}
-.lt span{display:inline-block;animation:letter .9s var(--spring) backwards;animation-delay:calc(var(--i) * 45ms + .15s)}
+.lt span{display:inline-block}
 @keyframes letter{from{transform:translateY(.6em) rotate(8deg)}}
 .lead{margin:0;color:var(--mist)}
 .note{margin:0;display:flex;gap:8px;align-items:center;font-size:13px;color:var(--faint)}
@@ -354,4 +354,6 @@ select.input option{background:var(--void);color:var(--ink)}
 html:not(.icons-ready) .ms{visibility:hidden}
 /* Page is ready once this stylesheet applies: reveal it and drop the loading spinner. */
 body{visibility:visible;animation:none}
-html::after{content:none;display:none}
+html:not(.booting)::after{content:none;display:none}
+html.booting #shell,html.booting #login{visibility:hidden!important}
+html.booting body *{transition:none!important}

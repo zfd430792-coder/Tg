@@ -18,6 +18,12 @@ const keep = {
 };
 const isDarkNow = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches; };
 const restart = el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; };
+// Entrance motion is opt-in and skipped during the initial load, so the first frame never moves.
+const EASE = 'cubic-bezier(.22,1,.36,1)';
+function enter(el, from, opts = {}) {
+  if (!el || reduced.matches || document.documentElement.classList.contains('booting') || !el.animate) return;
+  el.animate([{ transform: from }, { transform: 'none' }], { duration: 600, easing: EASE, fill: 'backwards', ...opts });
+}
 // Channel ids are stored by Pentaract without the -100 prefix; people copy them with it.
 const chatLabel = id => `-100${Math.abs(id)}`;
 

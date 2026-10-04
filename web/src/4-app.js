@@ -234,7 +234,9 @@ $('#f-access').addEventListener('submit', e => {
 $('#lt').innerHTML = [...'Pentaract'].map((c, i) => `<span style="--i:${i}" aria-hidden="true">${c}</span>`).join('');
 function showLogin() {
   S.authed = false; closeDrawer(); closeModal(); document.body.classList.add('locked');
-  const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving'); restart(card); $$('#lt span').forEach(restart);
+  const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving');
+  enter(card, 'translateY(26px) scale(.96)', { duration: 900 });
+  $$('#lt span').forEach((sp, i) => enter(sp, 'translateY(.6em) rotate(8deg)', { duration: 900, delay: 150 + i * 45, easing: 'cubic-bezier(.34,1.56,.64,1)' }));
   sky.mode('login'); setTimeout(() => $('#l-email').value ? $('#l-pass').focus() : $('#l-email').focus(), 300);
 }
 async function enterApp(instant = false) {
@@ -243,14 +245,12 @@ async function enterApp(instant = false) {
   $('#me-av').textContent = (mail[0] || '?').toUpperCase(); $('#me-name').textContent = mail.split('@')[0] || 'Аккаунт'; $('#me-mail').textContent = mail;
   S.authed = true;
   await Promise.all([loadStores(), loadWorkers()]);
-  const card = $('#f-login'), finish = () => {
-    $('#login').hidden = true; document.body.classList.remove('locked');
-    const sh = $('#shell'); sh.classList.remove('entering'); void sh.offsetWidth; sh.classList.add('entering');
-    movePill();
-  };
   sky.mode('app');
-  if (instant) finish(); else { card.classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); finish(); }
-  route(parseHash(), false);
+  await route(parseHash(), false, instant);
+  // The app is fully rendered behind the scenes; now reveal it in one step.
+  if (!instant) { $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
+  $('#login').hidden = true; document.body.classList.remove('locked');
+  movePill();
 }
 function logout(message) {
   auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {};
@@ -303,8 +303,9 @@ addEventListener('resize', movePill);
   $('#v-grid').setAttribute('aria-pressed', S.view === 'grid'); $('#v-list').setAttribute('aria-pressed', S.view === 'list');
   syncThemeBtn(); sky.init();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(movePill);
+  const ready = () => document.documentElement.classList.remove('booting');
   if (auth.valid()) {
-    try { await enterApp(true); return; } catch (e) { auth.clear(); }
+    try { await enterApp(true); ready(); return; } catch (e) { auth.clear(); }
   } else auth.clear();
-  showLogin();
+  showLogin(); ready();
 })();

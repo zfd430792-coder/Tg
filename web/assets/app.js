@@ -18,6 +18,12 @@ const keep = {
 };
 const isDarkNow = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches; };
 const restart = el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; };
+// Entrance motion is opt-in and skipped during the initial load, so the first frame never moves.
+const EASE = 'cubic-bezier(.22,1,.36,1)';
+function enter(el, from, opts = {}) {
+  if (!el || reduced.matches || document.documentElement.classList.contains('booting') || !el.animate) return;
+  el.animate([{ transform: from }, { transform: 'none' }], { duration: 600, easing: EASE, fill: 'backwards', ...opts });
+}
 // Channel ids are stored by Pentaract without the -100 prefix; people copy them with it.
 const chatLabel = id => `-100${Math.abs(id)}`;
 
@@ -202,12 +208,12 @@ function parseHash() {
   return { sec: sec || 'files', id: id || null, path };
 }
 addEventListener('popstate', () => { if (S.authed) route(parseHash(), false); });
-function route(r, push) {
+function route(r, push, quiet = false) {
   if (r.sec === 'bots') return showSection('bots', push);
   if (r.sec === 'people') { if (r.id) S.peopleStore = r.id; return showSection('people', push); }
   const st = S.stores.find(s => s.id === r.id) || S.store || S.stores[0];
   if (!st) { S.store = null; showSection('files', push); renderNoStores(); return; }
-  openStore(st, st.id === r.id ? r.path : '', push);
+  return openStore(st, st.id === r.id ? r.path : '', push, quiet);
 }
 
 /* ---------- storages ---------- */
@@ -260,8 +266,10 @@ function fillSelects() {
   if (S.store) $('#bot-store').value = S.store.id;
 }
 function showSection(sec, push = true) {
+  const changed = S.sec !== sec;
   S.sec = sec;
   $$('.view').forEach(v => { v.hidden = v.id !== 'view-' + sec; });
+  if (changed) enter($('#view-' + sec), 'translateY(14px)');
   $$('#nav button').forEach(b => b.classList.toggle('is-active', b.dataset.sec === sec));
   $$('.store').forEach(b => b.classList.toggle('is-active', sec === 'files' && !!S.store && b.dataset.id === S.store.id));
   movePill(); closeDrawer();
@@ -271,11 +279,11 @@ function showSection(sec, push = true) {
 }
 
 /* ---------- files ---------- */
-async function openStore(st, path = '', push = true) {
+async function openStore(st, path = '', push = true, quiet = false) {
   S.store = st; S.path = path; S.q = ''; $('#q').value = '';
   showSection('files', false);
   setHash(hashFor('files', st.id, path), push);
-  await loadTree();
+  await loadTree(quiet);
 }
 async function loadTree(quiet = false) {
   const st = S.store, path = S.path;
@@ -329,7 +337,7 @@ function renderFiles(quiet = false) {
     d.innerHTML = '<span class="ms" aria-hidden="true" style="color:inherit">delete</span>'; d.setAttribute('aria-label', 'Удалить эту папку');
     d.addEventListener('click', confirmFolderDelete); cr.appendChild(d);
   }
-  const title = $('#title'); title.textContent = S.path ? segs(S.path).pop() : st.name; if (!quiet) restart(title);
+  const title = $('#title'); title.textContent = S.path ? segs(S.path).pop() : st.name; if (!quiet) enter(title, 'translateY(14px)', { duration: 700 });
   const own = S.workers.filter(w => w.storage_id === st.id).length, has = S.has[st.id];
   $('#sub').innerHTML = `Канал <span class="mono">${chatLabel(st.chat_id)}</span> · ${own ? `${own} ${plural(own, W_BOT)} на связи` : has ? 'боты подключены' : 'ботов пока нет'}`;
   const size = S.items.reduce((a, n) => a + (n.size || 0), 0), files = S.items.filter(n => n.is_file).length;
@@ -674,7 +682,9 @@ $('#f-access').addEventListener('submit', e => {
 $('#lt').innerHTML = [...'Pentaract'].map((c, i) => `<span style="--i:${i}" aria-hidden="true">${c}</span>`).join('');
 function showLogin() {
   S.authed = false; closeDrawer(); closeModal(); document.body.classList.add('locked');
-  const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving'); restart(card); $$('#lt span').forEach(restart);
+  const L = $('#login'), card = $('#f-login'); L.hidden = false; card.classList.remove('leaving');
+  enter(card, 'translateY(26px) scale(.96)', { duration: 900 });
+  $$('#lt span').forEach((sp, i) => enter(sp, 'translateY(.6em) rotate(8deg)', { duration: 900, delay: 150 + i * 45, easing: 'cubic-bezier(.34,1.56,.64,1)' }));
   sky.mode('login'); setTimeout(() => $('#l-email').value ? $('#l-pass').focus() : $('#l-email').focus(), 300);
 }
 async function enterApp(instant = false) {
@@ -683,14 +693,12 @@ async function enterApp(instant = false) {
   $('#me-av').textContent = (mail[0] || '?').toUpperCase(); $('#me-name').textContent = mail.split('@')[0] || 'Аккаунт'; $('#me-mail').textContent = mail;
   S.authed = true;
   await Promise.all([loadStores(), loadWorkers()]);
-  const card = $('#f-login'), finish = () => {
-    $('#login').hidden = true; document.body.classList.remove('locked');
-    const sh = $('#shell'); sh.classList.remove('entering'); void sh.offsetWidth; sh.classList.add('entering');
-    movePill();
-  };
   sky.mode('app');
-  if (instant) finish(); else { card.classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); finish(); }
-  route(parseHash(), false);
+  await route(parseHash(), false, instant);
+  // The app is fully rendered behind the scenes; now reveal it in one step.
+  if (!instant) { $('#f-login').classList.add('leaving'); await new Promise(r => setTimeout(r, 480)); }
+  $('#login').hidden = true; document.body.classList.remove('locked');
+  movePill();
 }
 function logout(message) {
   auth.clear(); S.stores = []; S.store = null; S.items = []; S.workers = []; S.has = {};
@@ -743,8 +751,9 @@ addEventListener('resize', movePill);
   $('#v-grid').setAttribute('aria-pressed', S.view === 'grid'); $('#v-list').setAttribute('aria-pressed', S.view === 'list');
   syncThemeBtn(); sky.init();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(movePill);
+  const ready = () => document.documentElement.classList.remove('booting');
   if (auth.valid()) {
-    try { await enterApp(true); return; } catch (e) { auth.clear(); }
+    try { await enterApp(true); ready(); return; } catch (e) { auth.clear(); }
   } else auth.clear();
-  showLogin();
+  showLogin(); ready();
 })();
