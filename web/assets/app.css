@@ -352,3 +352,6 @@ select.input option{background:var(--void);color:var(--ink)}
 .hint .mono{font-size:13px}
 .boot{position:fixed;inset:0;z-index:15;display:grid;place-items:center;color:var(--mist);font:500 13px var(--mono);letter-spacing:.1em;text-transform:uppercase}
 html:not(.icons-ready) .ms{visibility:hidden}
+/* Page is ready once this stylesheet applies: reveal it and drop the loading spinner. */
+body{visibility:visible;animation:none}
+html::after{content:none;display:none}
