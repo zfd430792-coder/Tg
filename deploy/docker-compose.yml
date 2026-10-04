@@ -1,0 +1,56 @@
+name: pentaract
+
+# Caddy terminates HTTPS for ${DOMAIN} and proxies to Pentaract.
+# Pentaract and Postgres are not published to the host, only Caddy is.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: pentaract_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - pentaract
+    mem_limit: 128m
+
+  pentaract:
+    image: ${PENTARACT_IMAGE:-thedominux/pentaract:latest}
+    container_name: pentaract
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Uploads are buffered in memory; the limit keeps an oversized upload
+    # from pushing the host (and its other services) into the OOM killer.
+    mem_limit: 640m
+
+  db:
+    image: postgres:15-alpine
+    container_name: pentaract_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+    healthcheck:
+      test: pg_isready -U ${DATABASE_USER}
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - pentaract-db:/var/lib/postgresql/data
+    mem_limit: 256m
+
+volumes:
+  caddy-data:
+  caddy-config:
+  pentaract-db:

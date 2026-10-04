@@ -1,0 +1,12 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Open sign-up is closed: accounts are handed out by the admin.
+	@register {
+		method POST
+		path /api/users /api/users/
+	}
+	respond @register "Регистрация закрыта: доступ выдаёт администратор" 403
+
+	reverse_proxy pentaract:8000
+}
