@@ -282,6 +282,15 @@ addEventListener('keydown', e => {
 addEventListener('resize', movePill);
 
 /* ---------- start ---------- */
+// Icons come from a web font; hide the ligature words until it has loaded (or give up after 4s).
+(function iconsReady() {
+  const root = document.documentElement, done = () => root.classList.add('icons-ready');
+  const ok = () => { try { return [...document.fonts].some(f => f.family.includes('Material Symbols') && f.status === 'loaded'); } catch (e) { return true; } };
+  if (!document.fonts || ok()) return done();
+  document.fonts.addEventListener('loadingdone', () => { if (ok()) done(); });
+  setTimeout(done, 4000);
+})();
+
 (async function boot() {
   const p = keep.get('palette'), t = keep.get('theme');
   if (p && p !== 'telegram') setPalette(p);
