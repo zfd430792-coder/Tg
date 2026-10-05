@@ -111,6 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/zfd430792-coder/Tg/anime-mini-app/a
 | Команда | Что делает |
 |---|---|
 | `sudo animini status` | Версия, статус контейнеров, когда следующая проверка обновлений |
+| `sudo animini doctor` | Найти, почему не открывается сайт или Mini App: контейнеры, DNS, HTTPS и сертификат, HTTP/3, кнопка бота, доступность снаружи (в том числе из России) |
 | `sudo animini logs` | Логи приложения (`animini logs caddy` — логи HTTPS) |
 | `sudo animini update` | Обновить с GitHub прямо сейчас |
 | `sudo animini config` | Поменять токен, домен, название. Сменить ветку: `sudo ANIMINI_BRANCH=main animini config` |

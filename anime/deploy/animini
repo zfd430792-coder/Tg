@@ -24,6 +24,104 @@ timer_state() {
   fi
 }
 
+mark() {
+  case "$1" in
+    ok) printf '  \033[32m✓\033[0m %s\n' "$2" ;;
+    bad) printf '  \033[31m✗\033[0m %s\n' "$2" ;;
+    *) printf '  · %s\n' "$2" ;;
+  esac
+}
+
+# Проверка всего пути «телефон → домен → Caddy → приложение → бот».
+# Вывод без токена — его можно целиком прислать тому, кто помогает.
+doctor() {
+  local domain site mode port ip resolved out
+  domain=$(sed -n 's/^DOMAIN=//p' "$APP/.env")
+  site="https://$domain"
+  port=$(sed -n 's/^APP_PORT=//p' "$APP/.env")
+  mode=caddy
+  grep -q 'docker-compose.external.yml' "$APP/.env" && mode=external
+  echo "AniMini $(git -C "$DIR" rev-parse --short HEAD) · $site · $([[ $mode == caddy ]] && echo 'свой Caddy' || echo "за вашим прокси, 127.0.0.1:${port:-8787}")"
+
+  echo "Контейнеры"
+  local service state status
+  while IFS='|' read -r service state status; do
+    [[ -n "$service" ]] || continue
+    mark "$([[ $state == running ]] && echo ok || echo bad)" "$service: $status"
+  done < <(compose ps -a --format '{{.Service}}|{{.State}}|{{.Status}}' 2>/dev/null)
+  if [[ $mode == caddy ]] && ! compose ps --services --status running 2>/dev/null | grep -qx caddy; then
+    mark bad "caddy не работает — без него нет HTTPS. Последние строки лога:"
+    compose logs --tail 15 caddy 2>&1 | sed 's/^/      /'
+  fi
+
+  echo "Приложение"
+  if compose exec -T app wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+    mark ok "отвечает внутри контейнера"
+  else
+    mark bad "не отвечает. Последние строки лога:"
+    compose logs --tail 15 app 2>&1 | sed 's/^/      /'
+  fi
+
+  echo "DNS"
+  ip=$(curl -4 -fsS --max-time 6 https://api.ipify.org 2>/dev/null || true)
+  resolved=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)
+  if [[ -n "$ip" && " $resolved " == *" $ip "* ]]; then
+    mark ok "$domain → $ip"
+  else
+    mark bad "$domain указывает на «${resolved:-никуда}», а IP сервера ${ip:-неизвестен}"
+  fi
+
+  echo "HTTPS на самом сервере"
+  if [[ $mode == caddy ]]; then
+    if out=$(curl -sS --max-time 15 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code} по HTTP/%{http_version}' "$site/api/health" 2>&1); then
+      mark ok "$site/api/health → $out"
+    else
+      mark bad "$out"
+      mark info "Caddy о сертификате:"
+      compose logs --tail 300 caddy 2>&1 | grep -iE 'error|challenge|acme|certificate|obtain' | tail -8 | sed 's/^/      /'
+    fi
+    if command -v openssl >/dev/null; then
+      out=$(echo | timeout 10 openssl s_client -connect 127.0.0.1:443 -servername "$domain" 2>/dev/null |
+        openssl x509 -noout -issuer -enddate 2>/dev/null | sed 's/^issuer=/выдан: /; s/^notAfter=/до: /' | tr '\n' ' ' || true)
+      [[ -n "$out" ]] && mark ok "сертификат $out"
+    fi
+    if curl -sSI --max-time 10 --resolve "$domain:443:127.0.0.1" "$site/" 2>/dev/null | grep -qi '^alt-svc:.*h3'; then
+      mark bad "сервер предлагает HTTP/3 — в России из-за этого страница может висеть. Обновитесь: sudo animini update"
+    else
+      mark ok "HTTP/3 выключен"
+    fi
+    out=$(curl -s --max-time 10 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' "$site/telegram-web-app.js" 2>/dev/null || true)
+    if [[ "$out" == 200 ]]; then mark ok "скрипт Telegram отдаётся со своего сервера"; else mark bad "/telegram-web-app.js → ${out:-нет ответа} (нужно обновиться)"; fi
+  else
+    if out=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port:-8787}/api/health" 2>&1); then
+      mark ok "127.0.0.1:${port:-8787} → $out. Домен на этот порт направляет ваш прокси"
+    else
+      mark bad "127.0.0.1:${port:-8787}: $out"
+    fi
+  fi
+
+  echo "Порты и файрвол"
+  if command -v ss >/dev/null; then
+    out=$(ss -ltnpH '( sport = :80 or sport = :443 )' 2>/dev/null | grep -o 'users:(("[^"]*"' | sed 's/^users:(("//; s/"$//' | sort -u | tr '\n' ' ' || true)
+    if [[ -n "$out" ]]; then
+      mark ok "80/443 слушает: $out"
+    elif [[ $mode == caddy ]] && compose ps --services --status running 2>/dev/null | grep -qx caddy; then
+      mark info "80/443 пробрасывает Docker прямо в Caddy"
+    else
+      mark bad "80/443 никто не слушает"
+    fi
+  fi
+  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
+    if ufw status | grep -qE '^(80|443)(/tcp)? +ALLOW'; then mark ok "ufw пускает 80/443"; else mark bad "ufw включён и не пускает 80/443: sudo ufw allow 80/tcp && sudo ufw allow 443/tcp"; fi
+  fi
+  mark info "если у хостера есть свой файрвол в панели — там тоже должны быть открыты 80 и 443"
+
+  compose exec -T app node --input-type=module - <"$APP/deploy/doctor.mjs" 2>&1 || mark bad "проверка из контейнера не запустилась"
+
+  echo
+  echo "Если всё ✓, а в Telegram не открывается — откройте $site в Safari на телефоне, с VPN и без."
+}
+
 case "${1:-help}" in
   status)
     echo "Версия:         $(git -C "$DIR" log -1 --date=format:'%d.%m.%Y %H:%M' --format='%h  %s  (%cd)' "$(cat "$STATE/deployed" 2>/dev/null || echo HEAD)")"
@@ -41,6 +139,9 @@ case "${1:-help}" in
   update)
     shift
     "$APP/deploy/update.sh" --force "$@"
+    ;;
+  doctor | check)
+    doctor
     ;;
   restart)
     compose restart
@@ -73,6 +174,7 @@ case "${1:-help}" in
 Использование: sudo animini <команда>
 
   status     что запущено, какая версия, когда следующее обновление
+  doctor     найти, почему не открывается сайт или Mini App
   logs       логи приложения (logs caddy — логи HTTPS-прокси)
   update     обновить с GitHub прямо сейчас
   restart    перезапустить

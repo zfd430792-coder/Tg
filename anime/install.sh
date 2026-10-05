@@ -314,7 +314,7 @@ start_app() {
 open_firewall() {
   [[ $PROXY_MODE == caddy ]] || return 0
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
-    ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null && ufw allow 443/udp >/dev/null
+    ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null
     ok "открыл порты 80 и 443 в ufw"
   fi
 }

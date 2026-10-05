@@ -44,7 +44,17 @@ main() {
   log "обновляю ${deployed:0:7} → ${remote:0:7}: $(git -C "$DIR" log -1 --format=%s "$remote")"
   git -C "$DIR" reset --quiet --hard "$remote"
 
-  if (cd "$app" && docker compose build --pull app && docker compose up -d --remove-orphans) && healthy "$app"; then
+  # Caddyfile примонтирован файлом: после git reset контейнер видит старую копию,
+  # поэтому при его изменении Caddy пересоздаём.
+  local recreate=()
+  if [[ -n "$deployed" ]] && ! grep -q 'docker-compose.external.yml' "$app/.env" 2>/dev/null &&
+    ! git -C "$DIR" diff --quiet "$deployed" "$remote" -- anime/Caddyfile 2>/dev/null; then
+    recreate=(--force-recreate caddy)
+    log "изменился Caddyfile — перезапущу Caddy"
+  fi
+
+  if (cd "$app" && docker compose build --pull app && docker compose up -d --remove-orphans &&
+    { ((${#recreate[@]} == 0)) || docker compose up -d "${recreate[@]}"; }) && healthy "$app"; then
     echo "$remote" >"$STATE/deployed"
     rm -f "$STATE/failed"
     docker image prune -f >/dev/null 2>&1 || true

@@ -1,4 +1,14 @@
+{
+	# HTTP/3 (QUIC по UDP) провайдеры часто режут: браузер и Telegram на iPhone
+	# тогда долго висят, прежде чем откатиться на HTTP/2. Оставляем только h1 и h2.
+	servers {
+		protocols h1 h2
+	}
+}
+
 {$DOMAIN} {
+	# Если клиент успел запомнить HTTP/3 с прошлой версии — пусть забудет.
+	header Alt-Svc clear
 	encode zstd gzip
 	reverse_proxy app:3000
 }
