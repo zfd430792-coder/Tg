@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Управление AniMini на сервере: sudo animini <команда>
+set -Eeuo pipefail
+
+CONF=${ANIMINI_CONF:-/etc/animini.conf}
+[[ -r "$CONF" ]] || { echo "AniMini не установлен (нет $CONF)" >&2; exit 1; }
+DIR=$(sed -n 's/^DIR=//p' "$CONF")
+STATE=$(sed -n 's/^STATE=//p' "$CONF")
+BRANCH=$(sed -n 's/^BRANCH=//p' "$CONF")
+REPO=$(sed -n 's/^REPO=//p' "$CONF")
+APP="$DIR/anime"
+compose() { (cd "$APP" && docker compose "$@"); }
+
+timer_state() {
+  if command -v systemctl >/dev/null && systemctl list-unit-files animini-update.timer >/dev/null 2>&1 &&
+    systemctl is-enabled animini-update.timer >/dev/null 2>&1; then
+    local next
+    next=$(systemctl show animini-update.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    echo "включено (systemd${next:+, следующая проверка $next})"
+  elif [[ -f /etc/cron.d/animini ]]; then
+    echo "включено (cron)"
+  else
+    echo "выключено"
+  fi
+}
+
+case "${1:-help}" in
+  status)
+    echo "Версия:         $(git -C "$DIR" log -1 --date=format:'%d.%m.%Y %H:%M' --format='%h  %s  (%cd)' "$(cat "$STATE/deployed" 2>/dev/null || echo HEAD)")"
+    echo "Ветка:          $BRANCH ($REPO)"
+    echo "Автообновление: $(timer_state)"
+    [[ -f "$STATE/failed" ]] && echo "Не собралась:   $(cut -c1-7 "$STATE/failed") — ждём следующий коммит"
+    echo "Адрес:          $(sed -n 's/^SITE_URL=//p' "$APP/.env")"
+    echo
+    compose ps
+    ;;
+  logs)
+    shift
+    compose logs -f --tail 200 "${@:-app}"
+    ;;
+  update)
+    shift
+    "$APP/deploy/update.sh" --force "$@"
+    ;;
+  restart)
+    compose restart
+    ;;
+  config)
+    # Тот же установщик: покажет текущие значения и спросит, что поменять.
+    # Сменить ветку: sudo ANIMINI_BRANCH=main animini config
+    ANIMINI_REPO=${ANIMINI_REPO:-$REPO} ANIMINI_BRANCH=${ANIMINI_BRANCH:-$BRANCH} ANIMINI_DIR=$DIR bash "$APP/install.sh"
+    ;;
+  backup)
+    out=${2:-$PWD/animini-$(date +%Y%m%d-%H%M).db}
+    compose exec -T app node -e "
+      const { DatabaseSync } = require('node:sqlite');
+      new DatabaseSync(process.env.DB_PATH).exec(\"VACUUM INTO '/tmp/backup.db'\");" 2>/dev/null
+    compose cp app:/tmp/backup.db "$out" >/dev/null
+    compose exec -T app rm -f /tmp/backup.db
+    echo "База сохранена: $out"
+    ;;
+  uninstall)
+    read -r -p "Удалить AniMini с сервера? База пользователей тоже удалится. Введите yes: " answer </dev/tty
+    [[ "$answer" == yes ]] || { echo "Отменено"; exit 0; }
+    compose down -v || true
+    systemctl disable --now animini-update.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/animini-update.{service,timer} /etc/cron.d/animini /usr/local/bin/animini "$CONF"
+    rm -rf "$DIR" "$STATE"
+    echo "AniMini удалён"
+    ;;
+  *)
+    cat <<HELP
+Использование: sudo animini <команда>
+
+  status     что запущено, какая версия, когда следующее обновление
+  logs       логи приложения (logs caddy — логи HTTPS-прокси)
+  update     обновить с GitHub прямо сейчас
+  restart    перезапустить
+  config     поменять токен бота, домен и другие настройки
+  backup     сохранить базу пользователей в файл
+  uninstall  удалить всё с сервера
+HELP
+    ;;
+esac

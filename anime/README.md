@@ -81,7 +81,42 @@ npm run dev:web                     # фронтенд с горячей пер�
 
 Без `BOT_TOKEN` приложение работает как обычный сайт: прогресс хранится в браузере, уведомлений нет.
 
-## Деплой на VPS
+## Установка на VPS одной командой
+
+Нужен VPS на Ubuntu или Debian (от 1 ГБ памяти) и токен бота от [@BotFather](https://t.me/BotFather) (`/newbot`). Домен не обязателен: без него установщик предложит бесплатный адрес вида `203-0-113-10.sslip.io`, который сам указывает на ваш сервер.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zfd430792-coder/Tg/anime-mini-app/anime/install.sh | sudo bash
+```
+
+Установщик:
+1. Ставит Docker (если его нет), а на VPS с маленькой памятью добавляет подкачку.
+2. Спрашивает токен бота и проверяет его в Telegram, затем домен (проверяет, что он смотрит на этот сервер), название и пару настроек.
+3. Скачивает код в `/opt/animini`, пишет `.env` с доступом только для root.
+4. Собирает и запускает приложение с HTTPS и ставит боту кнопку меню, которая открывает Mini App.
+5. Включает **автообновление с GitHub**: каждые 5 минут таймер systemd проверяет ветку `anime-mini-app`. Если есть новый коммит, он пересобирает приложение и проверяет, что оно отвечает. Если новая версия не поднялась, откатывает на прошлую рабочую и больше не пробует этот коммит, пока не выйдет следующий.
+
+Без вопросов, например для автоматизации:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zfd430792-coder/Tg/anime-mini-app/anime/install.sh \
+  | sudo BOT_TOKEN=123456:AA... DOMAIN=anime.example.com AUTO_UPDATE=1 bash
+```
+
+Управление на сервере:
+
+| Команда | Что делает |
+|---|---|
+| `sudo animini status` | Версия, статус контейнеров, когда следующая проверка обновлений |
+| `sudo animini logs` | Логи приложения (`animini logs caddy` — логи HTTPS) |
+| `sudo animini update` | Обновить с GitHub прямо сейчас |
+| `sudo animini config` | Поменять токен, домен, название. Сменить ветку: `sudo ANIMINI_BRANCH=main animini config` |
+| `sudo animini backup` | Сохранить базу пользователей в файл |
+| `sudo animini uninstall` | Удалить всё с сервера |
+
+История автообновлений: `journalctl -u animini-update`.
+
+## Деплой вручную
 
 Нужен сервер с Docker и домен, A-запись которого указывает на сервер.
 
@@ -136,6 +171,8 @@ anime/
 ├── web/src/         фронтенд: pages/, components/player.tsx, router.ts, telegram.ts, user.ts
 ├── shared/          типы и ссылки, общие для сервера и фронтенда
 ├── dev/             мок AniLiberty и генератор тестового видео
+├── install.sh       установка на VPS одной командой
+├── deploy/          update.sh (автообновление с GitHub) и animini (команды управления)
 ├── Dockerfile, docker-compose.yml, Caddyfile
 ```
 
