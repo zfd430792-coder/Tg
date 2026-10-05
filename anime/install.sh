@@ -19,6 +19,7 @@ STATE="${ANIMINI_STATE:-/var/lib/animini}"
 BIN_DIR="${ANIMINI_BIN_DIR:-/usr/local/bin}"
 SYSTEMD_DIR="${ANIMINI_SYSTEMD_DIR:-/etc/systemd/system}"
 APP="$DIR/anime"
+PROJECT=anime # имя compose-проекта = имя папки с docker-compose.yml
 
 say() { printf '\n\033[1;35m▸ %s\033[0m\n' "$*" >&2; }
 ok() { printf '  \033[32m✓\033[0m %s\n' "$*" >&2; }
@@ -63,10 +64,18 @@ ask_secret() {
   printf '%s' "$answer"
 }
 
+# Да/нет. Непонятный ответ — переспрашиваем, а не считаем за «нет».
 confirm() {
-  local answer
-  answer=$(ask "$1 (y/n)" "$2")
-  [[ "$answer" =~ ^[YyДд] ]]
+  local answer i
+  for ((i = 0; i < 3; i++)); do
+    answer=$(ask "$1 (y/n)" "$2")
+    case "$answer" in
+      [Yy] | [Yy]es | [Дд] | [Дд]а) return 0 ;;
+      [Nn] | [Nn]o | [Нн] | [Нн]ет) return 1 ;;
+    esac
+    warn "Ответьте y или n"
+  done
+  [[ "$2" == y ]]
 }
 
 # Значение из .env без выполнения файла как скрипта.
@@ -253,6 +262,13 @@ BOT_APP_SHORT_NAME=$BOT_APP_SHORT_NAME
 HLS_PROXY=$HLS_PROXY
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
+  if [[ $PROXY_MODE == external ]]; then
+    cat >>"$APP/.env" <<EOF
+# Свой Caddy выключен: домен на 127.0.0.1:$APP_PORT направляет ваш прокси
+COMPOSE_FILE=docker-compose.yml:docker-compose.external.yml
+APP_PORT=$APP_PORT
+EOF
+  fi
   cat >"$CONF" <<EOF
 REPO=$REPO
 BRANCH=$BRANCH
@@ -266,7 +282,9 @@ EOF
 
 start_app() {
   say "Собираю и запускаю (первый раз — пара минут)"
-  (cd "$APP" && docker compose up -d --build --remove-orphans) >&2
+  if ! (cd "$APP" && docker compose up -d --build --remove-orphans) >&2; then
+    die "Docker не смог запустить приложение (ошибка выше). Если она про порт — запустите установку ещё раз: она покажет, кто его занял."
+  fi
   local i
   for ((i = 0; i < 60; i++)); do
     if (cd "$APP" && docker compose exec -T app wget -qO- http://127.0.0.1:3000/api/health) >/dev/null 2>&1; then
@@ -286,17 +304,120 @@ start_app() {
     fi
     sleep 4
   done
-  warn "https://$DOMAIN пока не открывается. Обычно это DNS или закрытые порты 80/443 — Caddy допишет сертификат сам, как только домен заработает."
+  if [[ $PROXY_MODE == external ]]; then
+    warn "https://$DOMAIN пока не открывается — направьте его в своём прокси на 127.0.0.1:$APP_PORT (пример ниже)."
+  else
+    warn "https://$DOMAIN пока не открывается. Обычно это DNS или закрытые порты 80/443 — Caddy допишет сертификат сам, как только домен заработает."
+  fi
 }
 
 open_firewall() {
+  [[ $PROXY_MODE == caddy ]] || return 0
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
     ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null && ufw allow 443/udp >/dev/null
     ok "открыл порты 80 и 443 в ufw"
   fi
-  local busy
-  busy=$(ss -ltnpH '( sport = :80 or sport = :443 )' 2>/dev/null | grep -v docker-proxy || true)
-  [[ -z "$busy" ]] || warn "Порты 80/443 занимает другая программа (nginx/apache?) — Caddy не сможет запуститься:"$'\n'"$busy"
+}
+
+# Контейнеры других проектов, которые опубликовали 80 или 443.
+port_containers() {
+  docker ps --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Ports}}' 2>/dev/null |
+    awk -F'|' -v self="$PROJECT" '$4 != self && $6 ~ /:(80|443)->/' || true
+}
+
+# Обычные программы на 80/443 (nginx, apache…). Порты контейнеров видны выше.
+port_processes() {
+  command -v ss >/dev/null || return 0
+  ss -ltnpH '( sport = :80 or sport = :443 )' 2>/dev/null | grep -v docker-proxy |
+    grep -o 'users:(("[^"]*"' | sed 's/^users:(("//; s/"$//' | sort -u || true
+}
+
+# Caddy нужны порты 80 и 443, чтобы выпустить сертификат. Если их держит
+# что-то другое — останавливаем его или встаём за уже работающий прокси.
+check_ports() {
+  say "Порты 80 и 443"
+  if [[ $PROXY_MODE == external ]]; then
+    if [[ -n "${ANIMINI_PROXY_MODE:-}" ]] || confirm "Сейчас AniMini работает за вашим прокси (127.0.0.1:$APP_PORT). Оставить так?" "y"; then
+      ok "за вашим прокси, порт 127.0.0.1:$APP_PORT"
+      return
+    fi
+    PROXY_MODE=caddy
+  fi
+
+  local containers processes
+  containers=$(port_containers)
+  processes=$(port_processes)
+  if [[ -z "$containers" && -z "$processes" ]]; then
+    ok "свободны"
+    return
+  fi
+
+  warn "Заняты — а они нужны Caddy, чтобы выпустить HTTPS-сертификат. Их держит:"
+  local id name image project dir _ p choice unit i
+  while IFS='|' read -r id name image project dir _; do
+    [[ -n "$id" ]] && printf '      контейнер %s (%s)%s\n' "$name" "$image" "${project:+, проект $project${dir:+ в $dir}}" >&2
+  done <<<"$containers"
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && printf '      программа %s\n' "$p" >&2
+  done <<<"$processes"
+
+  case "${PORTS_BUSY:-}" in
+    stop) choice=1 ;;
+    proxy) choice=2 ;;
+    '') choice='' ;;
+    *) die "PORTS_BUSY может быть stop или proxy" ;;
+  esac
+  if [[ -z "$choice" ]]; then
+    [[ $INTERACTIVE == 1 || -n "${ANIMINI_INPUT:-}" ]] ||
+      die "Порты заняты. Запустите с PORTS_BUSY=stop (остановить их) или PORTS_BUSY=proxy (встать за ваш прокси)"
+    printf '    1 — остановить это и отдать порты AniMini (вернуть потом: docker start <имя>)\n' >&2
+    printf '    2 — ничего не трогать: AniMini встанет за ваш прокси, домен на него направите сами\n' >&2
+    for ((i = 0; i < 3; i++)); do
+      choice=$(ask "Что делаем? (1/2)" "1")
+      [[ "$choice" == 1 || "$choice" == 2 ]] && break
+      warn "Введите 1 или 2"
+    done
+    [[ "$choice" == 1 || "$choice" == 2 ]] || die "Не понял ответ — запустите установку ещё раз"
+  fi
+
+  if [[ "$choice" == 2 ]]; then
+    PROXY_MODE=external
+    local port
+    for ((i = 0; i < 3; i++)); do
+      port=$(ask "На каком локальном порту запустить AniMini" "${APP_PORT:-8787}")
+      [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1024 && port <= 65535)) && break
+      warn "Нужен номер порта от 1024 до 65535"
+      port=''
+    done
+    [[ -n "$port" ]] || die "Не понял номер порта — запустите установку ещё раз"
+    APP_PORT=$port
+    ok "AniMini будет слушать 127.0.0.1:$APP_PORT"
+    return
+  fi
+
+  while IFS='|' read -r id name _; do
+    [[ -n "$id" ]] || continue
+    # Чтобы контейнер не поднялся сам после перезагрузки и снова не занял порт.
+    docker update --restart=no "$id" >/dev/null 2>&1 || true
+    docker stop "$id" >/dev/null && ok "остановил контейнер $name"
+  done <<<"$containers"
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    case "$p" in
+      nginx | apache2 | httpd | caddy | lighttpd | haproxy | traefik) unit=$p ;;
+      *) unit='' ;;
+    esac
+    if [[ -n "$unit" ]] && command -v systemctl >/dev/null && systemctl disable --now "$unit" >/dev/null 2>&1; then
+      ok "остановил и выключил $unit"
+    else
+      die "Порт держит «$p». Остановите его сами и запустите установку ещё раз."
+    fi
+  done <<<"$processes"
+
+  sleep 1
+  [[ -z "$(port_containers)$(port_processes)" ]] ||
+    die "Порты всё ещё заняты. Посмотрите, кто их держит: ss -ltnp | grep -E ':(80|443) '"
+  ok "свободны"
 }
 
 install_tools() {
@@ -347,6 +468,22 @@ EOF
   fi
 }
 
+proxy_help() {
+  [[ $PROXY_MODE == external ]] || return 0
+  cat <<EOF
+  Свой Caddy выключен — добавьте домен в ваш прокси:
+    nginx:  location / { proxy_pass http://127.0.0.1:$APP_PORT; proxy_set_header Host \$host;
+                         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                         proxy_set_header X-Forwarded-Proto \$scheme; }
+    Caddy:  $DOMAIN {
+              reverse_proxy 127.0.0.1:$APP_PORT
+            }
+    Если ваш прокси сам в Docker — 127.0.0.1 там не сработает: проще остановить его
+    и запустить установку ещё раз (вариант 1), тогда HTTPS возьмёт на себя AniMini.
+
+EOF
+}
+
 summary() {
   local bot=${BOT_USERNAME:+@$BOT_USERNAME}
   cat >&2 <<EOF
@@ -362,6 +499,9 @@ $(printf '\033[1;32m')Готово!$(printf '\033[0m')
   Для ссылок «Поделиться» вида t.me/бот/имя: @BotFather → /newapp, URL https://$DOMAIN,
   потом: sudo animini config (и впишите короткое имя).
 
+EOF
+  proxy_help >&2
+  cat >&2 <<EOF
   Команды:
     sudo animini status     что запущено и какая версия
     sudo animini logs       логи приложения
@@ -386,6 +526,16 @@ main() {
   say "Настройки"
   ask_options
   fetch_code
+  if [[ -n "${ANIMINI_PROXY_MODE:-}" ]]; then
+    PROXY_MODE=$ANIMINI_PROXY_MODE
+  elif [[ "$(env_get COMPOSE_FILE "$APP/.env")" == *external* ]]; then
+    PROXY_MODE=external
+  else
+    PROXY_MODE=caddy
+  fi
+  APP_PORT=${APP_PORT:-$(env_get APP_PORT "$APP/.env")}
+  APP_PORT=${APP_PORT:-8787}
+  check_ports
   write_config
   open_firewall
   start_app

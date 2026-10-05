@@ -1,0 +1,9 @@
+# Режим «за вашим прокси»: свой Caddy не запускается, приложение слушает
+# 127.0.0.1:APP_PORT, а домен на него направляет уже работающий nginx/Caddy.
+# Включается в .env строкой COMPOSE_FILE=docker-compose.yml:docker-compose.external.yml
+services:
+  app:
+    ports:
+      - "127.0.0.1:${APP_PORT:-8787}:3000"
+  caddy:
+    profiles: ["disabled"]
