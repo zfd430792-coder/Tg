@@ -11,6 +11,7 @@ import type { Config } from './config.ts';
 import type { Store } from './db.ts';
 import { buildMaster, proxiedUrl, rewritePlaylist, type HostRegistry } from './media.ts';
 import type { Notifier } from './notifier.ts';
+import { cvhPage } from './providers/balancers.ts';
 import type { Players } from './providers/index.ts';
 
 export interface HttpDeps {
@@ -190,6 +191,19 @@ export async function buildServer(deps: HttpDeps) {
     const release = await loadRelease(idOrAlias);
     cacheFor(reply, 300);
     return { players: await deps.players.forRelease(release) };
+  });
+
+  // Обёртка для плеера CVH: его встраивают скриптом, а не ссылкой. Страница открывается
+  // с нашего домена — по нему CVH узнаёт сайт партнёра (см. cvhPage).
+  app.get('/embed/cvh', async (request, reply) => {
+    if (!config.cvhPublisherId) throw new HttpError(404, 'CVH не настроен');
+    const page = cvhPage(request.query as Record<string, string | undefined>, config.cvhPublisherId, config.cvhSdk);
+    if (!page) throw new HttpError(400, 'Неверные параметры плеера');
+    return reply
+      .header('referrer-policy', 'strict-origin-when-cross-origin')
+      .header('cache-control', 'no-cache')
+      .type('text/html; charset=utf-8')
+      .send(page);
   });
 
   // Мастер-плейлист из отдельных качеств: с ним hls.js сам выбирает качество

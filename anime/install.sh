@@ -228,6 +228,21 @@ ask_options() {
   fi
   KODIK_TOKEN=$(printf '%s' "$KODIK_TOKEN" | tr -cd 'A-Za-z0-9')
 
+  current=$(env_get CVH_PUBLISHER_ID "$APP/.env")
+  if [[ -z "${CVH_PUBLISHER_ID+x}" ]]; then
+    printf '  Плееры в 1080p и с множеством озвучек: CVH и Alloha. Видео хранят они сами, для сайта это бесплатно,\n' >&2
+    printf '  но ID и токен выдают после регистрации сайта: cdnvideohub.com и alloha.tv. Пока нет — нажмите Enter.\n' >&2
+    CVH_PUBLISHER_ID=$(ask "ID издателя CVH (data-publisher-id)" "$current")
+  fi
+  CVH_PUBLISHER_ID=$(printf '%s' "$CVH_PUBLISHER_ID" | tr -cd 'A-Za-z0-9_-')
+
+  current=$(env_get ALLOHA_TOKEN "$APP/.env")
+  if [[ -z "${ALLOHA_TOKEN+x}" ]]; then
+    ALLOHA_TOKEN=$(ask_secret "Токен Alloha${current:+ (Enter — оставить текущий)}")
+    ALLOHA_TOKEN=${ALLOHA_TOKEN:-$current}
+  fi
+  ALLOHA_TOKEN=$(printf '%s' "$ALLOHA_TOKEN" | tr -cd 'A-Za-z0-9_.-')
+
   current=$(env_get HLS_PROXY "$APP/.env")
   if [[ -z "${HLS_PROXY:-}" ]]; then
     printf '  Прокси видео гонит весь видеотрафик через ваш сервер. Нужен, только если у зрителей не грузится видео.\n' >&2
@@ -273,16 +288,18 @@ BOT_TOKEN=$BOT_TOKEN
 BOT_APP_SHORT_NAME=$BOT_APP_SHORT_NAME
 HLS_PROXY=$HLS_PROXY
 KODIK_TOKEN=$KODIK_TOKEN
+CVH_PUBLISHER_ID=$CVH_PUBLISHER_ID
+ALLOHA_TOKEN=$ALLOHA_TOKEN
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
-  # Настройки, которые установщик не спрашивает (HLS_HOSTS, LOG_LEVEL и т.п.), переносим как есть.
-  # Токены других балансеров (их больше нет) не переносим.
+  # Настройки, которые установщик не спрашивает (HLS_HOSTS, SHIKIMORI_URL и т.п.), переносим как есть.
+  # Токены балансеров, которых больше нет, не переносим.
   if [[ -n "$old_env" ]]; then
     local line key
     while IFS= read -r line; do
       [[ $line =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
       key=${BASH_REMATCH[1]}
-      [[ $key =~ ^(COMPOSE_FILE|APP_PORT|SHIKIMORI_URL)$|^(ALLOHA|COLLAPS|LUMEX|TURBO|VEOVEO|VIBIX|CVH)_ ]] && continue
+      [[ $key =~ ^(COMPOSE_FILE|APP_PORT)$|^(COLLAPS|LUMEX|TURBO|VEOVEO|VIBIX)_ ]] && continue
       grep -q "^${key}=" "$APP/.env" || printf '%s\n' "$line" >>"$APP/.env"
     done <<<"$old_env"
   fi

@@ -7,6 +7,8 @@ import { useEffect, useRef } from 'react';
 export interface FramePlayerProps {
   src: string;
   title: string;
+  /** Формат событий плеера (см. PlayerSource.events): null — плеер ничего не сообщает. */
+  events: 'kodik' | null;
   /** Какая серия открыта по src. Дальше плеер сам сообщает, если её сменили внутри. */
   episode: number;
   /** Номера серий больше этого из сообщений плеера не принимаем. */
@@ -39,7 +41,7 @@ export default function FramePlayer(props: FramePlayerProps) {
     };
 
     const onMessage = (event: MessageEvent) => {
-      if (!frame.current || event.source !== frame.current.contentWindow) return;
+      if (!frame.current || event.source !== frame.current.contentWindow || latest.current.events !== 'kodik') return;
       const data = event.data as FrameMessage;
       if (!data || typeof data !== 'object' || typeof data.key !== 'string') return;
       const value = data.value as any;

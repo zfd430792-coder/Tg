@@ -29,7 +29,7 @@ function validOrdinal(value: number): number | null {
   return Number.isFinite(value) && value >= 0 && value <= MAX_EPISODE ? value : null;
 }
 
-/** Серии AniLibria плюс серии 1…extraUpTo, которые пока есть только в Kodik. */
+/** Серии AniLibria плюс серии 1…extraUpTo, которые пока есть только в других плеерах. */
 function buildEntries(release: Release, extraUpTo: number | null, extra: number | null = null): Entry[] {
   const byOrdinal = new Map<number, Entry>(release.episodes.map((e) => [e.ordinal, { ordinal: e.ordinal, id: e.id, episode: e }]));
   // ID таких серий должен быть уникален и среди всех тайтлов: по нему сервер хранит прогресс.
@@ -42,6 +42,17 @@ function buildEntries(release: Release, extraUpTo: number | null, extra: number 
 function ownPlayer(release: Release): PlayerSource | null {
   if (!release.episodes.some((e) => e.sources.length)) return null;
   return { id: 'anilibria', title: 'AniLibria', kind: 'hls', link: null, dubs: [], frame: null, events: null, lastEpisode: null, season: null };
+}
+
+/** «1080p», «4K»: показываем только хорошее качество, чтобы его было видно сразу. */
+function qualityLabel(quality: number | null): string | null {
+  if (!quality || quality < 1080) return null;
+  return quality >= 2160 ? '4K' : `${quality}p`;
+}
+
+function dubTitle(dub: Dub): string | undefined {
+  const parts = [dub.lastEpisode ? `Вышло серий: ${dub.lastEpisode}` : null, dub.quality ? `качество до ${dub.quality}p` : null];
+  return parts.filter(Boolean).join(', ') || undefined;
 }
 
 function dubLabel(dub: Dub): string {
@@ -81,7 +92,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const dub = selection?.dub ?? null;
 
   const wanted = validOrdinal(Number(ordinal));
-  // Список серий общий для обоих плееров: серии AniLibria и всё, что уже вышло в Kodik.
+  // Список серий общий для всех плееров: серии AniLibria и всё, что вышло в других плеерах.
   const otherUpTo = Math.max(
     0,
     ...players.filter((p) => p.kind === 'iframe').map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))),
@@ -186,6 +197,15 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   // Отложенный автопереход не должен сработать после ухода со страницы или смены серии.
   useEffect(() => () => window.clearTimeout(nextTimer.current), [frame?.nonce]);
 
+  // Alloha не сообщает время просмотра. Чтобы тайтл попал в «Продолжить просмотр»,
+  // запоминаем хотя бы, какую серию открыли (если прогресса по ней ещё нет).
+  useEffect(() => {
+    if (!frame || !player || player.events || !player.frame?.episode || !state) return;
+    if (state.progress.some((p) => p.ordinal === frame.episode)) return;
+    saveProgress(frame.episode, 0, 0, { watched: false, leaving: false });
+    // Только при смене серии или плеера, а не при каждом обновлении прогресса.
+  }, [frame?.nonce, state === null]);
+
   const onFrameEpisode = useCallback(
     (episode: number) => {
       reportedEpisode.current = episode;
@@ -284,6 +304,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       <FramePlayer
         key={frame.nonce}
         maxEpisode={MAX_EPISODE}
+        events={player.events}
         src={frame.src}
         episode={frame.episode}
         title={`${release.title} — ${subtitle}`}
@@ -326,16 +347,25 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
                     key={d.id}
                     className={`chip ${d.id === dub?.id ? 'active' : ''} ${missing ? 'missing' : ''}`}
                     onClick={() => d.id !== dub?.id && choose(player, d)}
-                    title={d.lastEpisode ? `Вышло серий: ${d.lastEpisode}` : undefined}
+                    title={dubTitle(d)}
                   >
                     {dubLabel(d)}
+                    {qualityLabel(d.quality) && <span className="chip-hd">{qualityLabel(d.quality)}</span>}
                     {d.lastEpisode !== null && <span className="chip-count">{d.lastEpisode}</span>}
                   </button>
                 );
               })}
             </div>
           )}
-          {player?.kind === 'iframe' && player.dubs.length === 0 && <p className="hint">Озвучку выбирают внутри плеера.</p>}
+          {player?.kind === 'iframe' && (player.dubs.length === 0 || !player.frame?.episode) && (
+            <p className="hint">
+              {!player.frame?.episode && player.dubs.length === 0
+                ? 'Серию и озвучку выбирают внутри плеера.'
+                : !player.frame?.episode
+                  ? 'Серию выбирают внутри плеера.'
+                  : 'Озвучку выбирают внутри плеера.'}
+            </p>
+          )}
         </div>
       )}
 

@@ -310,6 +310,97 @@ if (q.get('hide_selectors') !== 'true') {
 </script></html>`;
 }
 
+// ---- Мок CVH, Alloha и Shikimori ----
+
+const byKinopoisk = (kp: string | null) => (kp ? releases[Number(kp) - 1000000] : undefined);
+
+// CVH: плейлист как у plapi.cdnvideohub.com (204 — тайтла нет) и поддельный веб-компонент <video-player>.
+function cvhPlaylist(url: URL): Raw | null | 'forbidden' {
+  if (url.searchParams.get('pub') !== 'pub-cvh') return 'forbidden';
+  const id = url.searchParams.get('id');
+  const aggr = url.searchParams.get('aggr');
+  const r = aggr === 'mali' ? releases[Number(id) - 50000] : aggr === 'kp' ? byKinopoisk(id) : undefined;
+  if (!r) return null;
+  const count = Math.max(r.episodes.length, 3);
+  const item = (voiceStudio: string, episode: number) => ({ cvhId: `${r.id}-${voiceStudio}-${episode}`, vkId: String(episode), voiceStudio, voiceType: 'Многоголосый', season: 1, episode });
+  const items = [
+    ...Array.from({ length: count }, (_, i) => item('AniDub Online', i + 1)),
+    ...Array.from({ length: count - 1 }, (_, i) => item('Dream Cast', i + 1)),
+  ];
+  return { titleName: r.name.main, isSerial: true, items, trailers: null };
+}
+
+// Поддельный SDK: рисует атрибуты, шлёт события как настоящий и сообщает, видит ли данные сайта.
+const CVH_SDK = `customElements.define('video-player', class extends HTMLElement {
+  connectedCallback() {
+    const a = (n) => this.getAttribute(n) || '';
+    let site = 'нет доступа';
+    try { site = Object.keys(localStorage).some((k) => k.startsWith('am:')) ? 'видит данные сайта' : 'данных сайта не видит'; } catch (e) {}
+    let episode = Number(a('episode')) || 1;
+    const info = document.createElement('div');
+    info.id = 'info';
+    const render = () => { info.textContent = 'CVH (мок) · ' + a('data-aggregator') + '=' + a('data-title-id') + ' · pub=' + a('data-publisher-id') + ' · серия ' + episode + ' · priority=' + a('priority-voice') + ' · only=' + a('only-voice') + ' · ' + site; };
+    const next = document.createElement('button');
+    next.id = 'next';
+    next.textContent = 'Следующая';
+    this.api = { getState: () => ({ currentEpisode: episode, currentSeason: Number(a('season')) || 1 }) };
+    next.onclick = () => { episode++; render(); this.dispatchEvent(new CustomEvent('changeState', { detail: { state: 'playing' }, bubbles: true })); };
+    this.append(info, next);
+    this.style.cssText = 'display:grid;place-items:center;align-content:center;gap:12px;background:#101a16;color:#fff;font:14px sans-serif';
+    render();
+    this.dispatchEvent(new CustomEvent('durationChange', { detail: { duration: 60 } }));
+    let t = 0;
+    setInterval(() => {
+      t++;
+      this.dispatchEvent(new CustomEvent('currentTime', { detail: { time: t } }));
+      if (t === 60) this.dispatchEvent(new CustomEvent('playComplete', { detail: {} }));
+    }, 1000);
+  }
+});`;
+
+function allohaSearch(url: URL, auth: string | undefined): Raw {
+  if (auth !== 'Bearer test-alloha') return { status: 'error', error_info: 'not valid token' };
+  const r = byKinopoisk(url.searchParams.get('kp'));
+  if (!r) return { status: 'error', error_info: 'not movie' };
+  const count = kodikEpisodes(r, 1);
+  const translations = [
+    { id: 9, name: 'AniDUB', quality: 'WEB-DL', resolutions: [1080, 720] },
+    { id: 10, name: 'AniLibria', quality: 'WEB-DL 720p', resolutions: [] },
+    { id: 79, name: 'Субтитры', quality: 'BDRip', uhd: true, resolutions: [2160, 1080, 720] },
+  ];
+  return {
+    data: {
+      name: r.name.main,
+      iframe: `${ORIGIN}/balancer/alloha/?token_movie=m${r.id}&token=test-alloha`,
+      translations,
+      seasons: [
+        {
+          season: 1,
+          episodes_count: count,
+          episodes: Array.from({ length: count }, (_, n) => ({
+            episode: n + 1,
+            translations: translations.filter((t) => t.id !== 10 || n < r.episodes.length).map((t) => ({ id: t.id })),
+          })),
+        },
+      ],
+    },
+  };
+}
+
+function shikimoriGraphql(body: Raw): Raw {
+  const id = Number(String(body?.variables?.ids ?? ''));
+  const index = id - 50000;
+  if (!releases[index]) return { data: { animes: [] } };
+  return { data: { animes: [{ id: String(id), externalLinks: [{ kind: 'kinopoisk', url: `https://www.kinopoisk.ru/series/${1000000 + index}/` }] }] } };
+}
+
+function balancerPage(name: string, url: URL): string {
+  const params = [...url.searchParams.entries()].filter(([k]) => k !== 'token').map(([k, v]) => `${k}=${v}`).join(' · ');
+  return `<!doctype html><meta charset="utf-8"><title>${name}</title>
+<body style="margin:0;height:100vh;display:grid;place-items:center;background:#16121c;color:#fff;font:14px sans-serif">
+<div id="info">${name} (мок) · ${params || 'без параметров'}</div></body>`;
+}
+
 function readBody(req: IncomingMessage): Promise<Raw> {
   return new Promise((resolve) => {
     let data = '';
@@ -372,6 +463,26 @@ const server = createServer(async (req, res) => {
   if ((m = /^\/kodik\/serial\/(\d+)\/(\w+)\/720p$/.exec(p))) {
     const r = releases.find((x) => x.id === Number(m![1]));
     res.writeHead(r ? 200 : 404, { 'content-type': 'text/html; charset=utf-8' }).end(r ? kodikPage(r, m[2]) : 'нет');
+    return;
+  }
+
+  if (p === '/cvh/api/v1/player/sv/playlist') {
+    const playlist = cvhPlaylist(url);
+    if (playlist === 'forbidden') return send(res, 403, { message: 'Forbidden' });
+    if (!playlist) {
+      res.writeHead(204).end();
+      return;
+    }
+    return send(res, 200, playlist);
+  }
+  if (p === '/cvh/sdk.js') {
+    res.writeHead(200, { 'content-type': 'application/javascript' }).end(CVH_SDK);
+    return;
+  }
+  if (p === '/alloha/v2/movies/search') return send(res, 200, allohaSearch(url, req.headers.authorization));
+  if (p === '/shikimori/api/graphql' && req.method === 'POST') return send(res, 200, shikimoriGraphql(await readBody(req)));
+  if ((m = /^\/balancer\/(alloha)(\/.*)?$/.exec(p))) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(balancerPage('Alloha', url));
     return;
   }
 

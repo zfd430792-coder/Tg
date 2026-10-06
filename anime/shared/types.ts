@@ -65,7 +65,7 @@ export interface Release extends ReleaseCard {
 
 /** Озвучка внутри плеера, которую можно выбрать на нашей странице (у Kodik — по токену). */
 export interface Dub {
-  /** 'kodik:<id перевода>' */
+  /** '<плеер>:<id озвучки>', например 'kodik:609'. */
   id: string;
   title: string;
   type: 'voice' | 'subtitles' | null;
@@ -75,14 +75,16 @@ export interface Dub {
   lastEpisode: number | null;
   /** Ключ сезона у Kodik ('1', '4'…): нужен, чтобы открыть конкретную серию. */
   season: string | null;
+  /** Лучшее качество этой озвучки по высоте кадра (720, 1080, 2160), если известно. */
+  quality: number | null;
 }
 
 /**
- * Источник видео для тайтла: наш HLS-плеер AniLibria или встроенный плеер Kodik,
- * как переключатель «плеер» на аниме-сайтах.
+ * Источник видео для тайтла: наш HLS-плеер AniLibria или встроенный плеер
+ * видеобалансера (Kodik, CVH, Alloha), как переключатель «плеер» на аниме-сайтах.
  */
 export interface PlayerSource {
-  /** 'anilibria' или 'kodik'. */
+  /** 'anilibria', 'kodik', 'cvh', 'alloha'. */
   id: string;
   title: string;
   kind: 'hls' | 'iframe';
@@ -92,13 +94,13 @@ export interface PlayerSource {
   dubs: Dub[];
   /** Как управлять плеером через адрес iframe; null — у нашего HLS-плеера. */
   frame: FrameParams | null;
-  /** Как плеер сообщает время через postMessage: 'kodik' — {key, value}; null — у нашего HLS-плеера. */
+  /** Как плеер сообщает время через postMessage: 'kodik' — {key, value}; null — никак (наш HLS-плеер, Alloha). */
   events: 'kodik' | null;
   lastEpisode: number | null;
   season: string | null;
 }
 
-/** Параметры адреса встроенного плеера (имена параметров Kodik). */
+/** Параметры адреса встроенного плеера: у каждого балансера свои. */
 export interface FrameParams {
   /** Имя параметра сезона и серии; null — серию выбирают в самом плеере. */
   season: string | null;

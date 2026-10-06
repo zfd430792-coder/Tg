@@ -39,6 +39,16 @@ export const config = {
   kodikToken: str('KODIK_TOKEN'),
   kodikApi: str('KODIK_API', 'https://kodik-api.com')!.replace(/\/+$/, ''),
 
+  /** CVH (CDNVideoHub): ID издателя (data-publisher-id). Выдают после регистрации сайта. */
+  cvhPublisherId: str('CVH_PUBLISHER_ID'),
+  cvhApi: str('CVH_API', 'https://plapi.cdnvideohub.com/api/v1')!.replace(/\/+$/, ''),
+  cvhSdk: str('CVH_SDK', 'https://player.cdnvideohub.com/s2/stable/video-player.umd.js')!,
+  /** Alloha: токен партнёра. Тайтл ищет по ID Кинопоиска. */
+  allohaToken: str('ALLOHA_TOKEN'),
+  allohaApi: str('ALLOHA_API', 'https://apbugall.org/v2')!.replace(/\/+$/, ''),
+  /** Где искать ID Кинопоиска по ID Shikimori, если нет токена Kodik. Пусто — не искать (в России Shikimori заблокирован). */
+  shikimoriUrl: process.env.SHIKIMORI_URL === '' ? null : str('SHIKIMORI_URL', 'https://shikimori.io')!.replace(/\/+$/, ''),
+
   notifyInterval: num('NOTIFY_INTERVAL_MIN', 10) * 60_000,
 
   dbPath: path.resolve(root, str('DB_PATH', 'data/animini.db')!),

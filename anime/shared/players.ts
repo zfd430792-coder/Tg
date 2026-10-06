@@ -30,7 +30,9 @@ export interface FrameOptions {
 
 /** Адрес iframe для серии: параметры сезона/серии и показ или скрытие меню озвучек плеера. */
 export function frameSrc(link: string, options: FrameOptions): string {
-  const url = new URL(link);
+  // Ссылка бывает и своей, относительной (/embed/cvh?...) — тогда и возвращаем относительную.
+  const relative = link.startsWith('/') && !link.startsWith('//');
+  const url = new URL(link, 'http://relative.invalid');
   const { params } = options;
   if (options.hideDubs && params.hideDubs) {
     for (const [key, value] of Object.entries(params.hideDubs)) url.searchParams.set(key, value);
@@ -42,5 +44,5 @@ export function frameSrc(link: string, options: FrameOptions): string {
     if (params.season && options.season) url.searchParams.set(params.season, options.season);
     url.searchParams.set(params.episode, String(options.episode));
   }
-  return url.toString();
+  return relative ? `${url.pathname}${url.search}` : url.toString();
 }

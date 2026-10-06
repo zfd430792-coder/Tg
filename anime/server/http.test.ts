@@ -49,7 +49,16 @@ before(async () => {
   const api = new AniLiberty({ apiBase: `${origin}/api/v1`, mediaBase: origin, hlsProxy: true, hosts, userAgent: 'test' });
   store = new Store(':memory:');
   app = await buildServer({
-    config: { ...config, botToken: TOKEN, apiBase: `${origin}/api/v1`, mediaBase: origin, hlsProxy: true, webDist: path.join(root, 'nonexistent') },
+    config: {
+      ...config,
+      botToken: TOKEN,
+      apiBase: `${origin}/api/v1`,
+      mediaBase: origin,
+      hlsProxy: true,
+      webDist: path.join(root, 'nonexistent'),
+      cvhPublisherId: 'pub-cvh',
+      cvhSdk: `${origin}/cvh/sdk.js`,
+    },
     api,
     store,
     hosts,
@@ -141,6 +150,17 @@ describe('плееры', () => {
     const kodik = players.find((p) => p.id === 'kodik');
     assert.equal(kodik?.dubs.length, 0);
     assert.match(kodik?.link ?? '', /\/kodik\/serial\/9001\/base\/720p/);
+  });
+});
+
+describe('страница плеера CVH', () => {
+  test('собирается из проверенных параметров, неверные — 400', async () => {
+    const res = await app.inject('/embed/cvh?aggr=mali&id=50000&voice=AniDub%20Online&only=1&episode=2');
+    assert.equal(res.statusCode, 200);
+    assert.match(String(res.headers['content-type']), /text\/html/);
+    assert.ok(res.body.includes('data-publisher-id="pub-cvh"'));
+    assert.ok(res.body.includes('only-voice="AniDub Online"'));
+    assert.equal((await app.inject('/embed/cvh?aggr=x&id=1')).statusCode, 400);
   });
 });
 

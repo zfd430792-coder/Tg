@@ -24,7 +24,43 @@ export interface KodikResult {
   last_episode?: number;
   episodes_count?: number;
   shikimori_id?: string;
+  kinopoisk_id?: string;
+  imdb_id?: string;
+  /** Например, «BDRip 720p» или «WEB-DLRip 720p». */
+  quality?: string;
   seasons?: Record<string, unknown>;
+}
+
+export interface ExternalIds {
+  shikimori: string | null;
+  kinopoisk: string | null;
+  imdb: string | null;
+  /** Сезон внутри сериала на Кинопоиске/IMDb: там один ID на все сезоны, а у Shikimori — свой на каждый. */
+  kpSeason: number | null;
+}
+
+export const noIds = (): ExternalIds => ({ shikimori: null, kinopoisk: null, imdb: null, kpSeason: null });
+
+/** Самое частое значение поля среди записей (по записи на перевод). */
+function majority(results: KodikResult[], pick: (r: KodikResult) => unknown): string | null {
+  const counts = new Map<string, number>();
+  for (const result of results) {
+    const value = pick(result);
+    if (value === undefined || value === null || value === '') continue;
+    counts.set(String(value), (counts.get(String(value)) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+/** ID Кинопоиска и IMDb из записей Kodik: они нужны Alloha. */
+export function idsFrom(results: KodikResult[], shikimori: string | null): ExternalIds {
+  const season = majority(results, (r) => r.last_season);
+  return {
+    shikimori: shikimori ?? majority(results, (r) => r.shikimori_id),
+    kinopoisk: majority(results, (r) => r.kinopoisk_id),
+    imdb: majority(results, (r) => r.imdb_id),
+    kpSeason: season ? Number(season) : null,
+  };
 }
 
 export class KodikError extends Error {}
@@ -109,6 +145,14 @@ function seasonOf(result: KodikResult): string | null {
   return keys.length ? keys[keys.length - 1] : null;
 }
 
+/** Высота кадра из строки качества: «WEB-DLRip 720p» → 720, «4K» → 2160. */
+export function qualityOf(value: unknown): number | null {
+  const text = String(value ?? '');
+  if (/\b(4k|uhd|2160p?)\b/i.test(text)) return 2160;
+  const match = /\b(\d{3,4})p\b/i.exec(text);
+  return match ? Number(match[1]) : null;
+}
+
 /** Переводы → озвучки: по одной на перевод, сначала озвучки, потом субтитры, больше серий — выше. */
 export function toDubs(results: KodikResult[]): Dub[] {
   const byTranslation = new Map<number, Dub>();
@@ -123,6 +167,7 @@ export function toDubs(results: KodikResult[]): Dub[] {
       link,
       lastEpisode: lastEpisodeOf(result),
       season: seasonOf(result),
+      quality: qualityOf(result.quality),
     };
     const previous = byTranslation.get(translation.id);
     if (!previous || (dub.lastEpisode ?? 0) > (previous.lastEpisode ?? 0)) byTranslation.set(translation.id, dub);

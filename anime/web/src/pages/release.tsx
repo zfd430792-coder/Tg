@@ -21,7 +21,7 @@ export function shareUrl(config: AppConfig, release: Release): string {
 
 /**
  * С какой серии продолжить: первая недосмотренная после последней открытой. Серии берём
- * из AniLibria и из Kodik (1…othersUpTo): некоторых тайтлов у AniLibria нет вовсе.
+ * из AniLibria и из других плееров (1…othersUpTo): некоторых тайтлов у AniLibria нет вовсе.
  */
 export function resumeEpisode(
   release: Release,
@@ -74,7 +74,7 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   const players = playersQuery.data?.players ?? [];
   const others = players.filter((p) => p.kind === 'iframe');
   const othersUpTo = Math.max(0, ...others.map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))));
-  // Общий плеер Kodik (без токена) не сообщает число серий — значит, есть хотя бы первая.
+  // Плеер без сведений о числе серий (общий Kodik без токена и т.п.) — значит, есть хотя бы первая.
   const resume = resumeEpisode(release, state.progress, others.length > 0 ? Math.max(othersUpTo, 1) : 0);
   const ownVideo = release.episodes.some((e) => e.sources.length > 0);
   const episodes = settings.episodesDesc ? [...release.episodes].reverse() : release.episodes;

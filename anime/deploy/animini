@@ -45,6 +45,8 @@ doctor() {
 
   local players=AniLibria
   players+=", Kodik$(grep -q '^KODIK_TOKEN=.' "$APP/.env" && echo ' (с выбором озвучки)' || echo ' (общий плеер, озвучка в его меню)')"
+  grep -q '^CVH_PUBLISHER_ID=.' "$APP/.env" && players+=", CVH"
+  grep -q '^ALLOHA_TOKEN=.' "$APP/.env" && players+=", Alloha"
   echo "Плееры: $players"
 
   echo "Контейнеры"

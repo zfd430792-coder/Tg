@@ -1,14 +1,27 @@
-// Список плееров для тайтла: наш HLS-плеер AniLibria и встроенный плеер Kodik.
-// С токеном Kodik у каждой озвучки своя ссылка и кнопка на нашей странице, без
-// него — общий плеер Kodik, где озвучку выбирают внутри.
+// Список плееров для тайтла: наш HLS-плеер AniLibria и встроенные плееры
+// видеобалансеров: Kodik, CVH и Alloha. Kodik есть всегда (без токена — общий плеер
+// с выбором озвучки внутри), CVH и Alloha — только с их партнёрским ID или токеном.
 
 import type { Dub, PlayerSource, Release } from '../../shared/types.ts';
 import { TtlCache } from '../cache.ts';
-import { KodikApi, kodikFallbackLink, kodikPlayer, toDubs } from './kodik.ts';
+import type { Store } from '../db.ts';
+import { Alloha, type Balancer, Cvh } from './balancers.ts';
+import { IdResolver, ShikimoriApi } from './ids.ts';
+import { type ExternalIds, idsFrom, KodikApi, kodikFallbackLink, kodikPlayer, noIds, toDubs } from './kodik.ts';
 
 export interface PlayersOptions {
   kodikToken: string | null;
   kodikApi: string;
+  cvhPublisherId?: string | null;
+  cvhApi?: string;
+  allohaToken?: string | null;
+  allohaApi?: string;
+  /** Адрес нашего сайта: CVH узнаёт партнёра по домену. */
+  siteUrl?: string | null;
+  /** Адрес Shikimori для поиска ID Кинопоиска (нужен Alloha); null — не ходить туда. */
+  shikimoriUrl?: string | null;
+  userAgent?: string;
+  store?: Store;
   log: (message: string, error?: unknown) => void;
 }
 
@@ -34,22 +47,38 @@ const withTimeout = <T>(promise: Promise<T>, ms: number) =>
 export class Players {
   private cache = new TtlCache(500);
   private kodik: KodikApi | null;
+  private balancers: Balancer[];
+  private ids: IdResolver | null;
   private log: PlayersOptions['log'];
 
   constructor(options: PlayersOptions) {
     this.kodik = options.kodikToken ? new KodikApi(options.kodikToken, options.kodikApi) : null;
+    this.balancers = [];
+    if (options.cvhPublisherId) {
+      this.balancers.push(new Cvh(options.cvhPublisherId, options.cvhApi ?? 'https://plapi.cdnvideohub.com/api/v1', options.siteUrl ?? null));
+    }
+    if (options.allohaToken) this.balancers.push(new Alloha(options.allohaToken, options.allohaApi ?? 'https://apbugall.org/v2'));
+    // ID Кинопоиска ищем, только если он кому-то нужен (Alloha).
+    this.ids =
+      options.allohaToken && options.store
+        ? new IdResolver({
+            store: options.store,
+            shikimori: options.shikimoriUrl ? new ShikimoriApi(options.shikimoriUrl, options.userAgent ?? 'AniMini') : null,
+            log: options.log,
+          })
+        : null;
     this.log = options.log;
   }
 
   /** Какие плееры включены (для лога при запуске). */
   get enabled(): string[] {
-    return ['anilibria', this.kodik ? 'kodik (озвучки по токену)' : 'kodik (общий плеер)'];
+    return ['anilibria', this.kodik ? 'kodik (озвучки по токену)' : 'kodik (общий плеер)', ...this.balancers.map((b) => b.id)];
   }
 
   /**
    * Плееры тайтла. Свой плеер считаем на каждый запрос из свежих данных релиза (вышла
-   * первая серия — он сразу появится), а ответ Kodik кэшируем на 20 минут. Если Kodik
-   * не ответил, общий плеер без списка озвучек держим всего минуту.
+   * первая серия — он сразу появится), а балансеры кэшируем на 20 минут. Если кто-то из
+   * них не ответил, неполный список держим всего минуту.
    */
   async forRelease(release: Release): Promise<PlayerSource[]> {
     const key = `players:${release.id}`;
@@ -60,17 +89,45 @@ export class Players {
   }
 
   private async collect(release: Release): Promise<{ players: PlayerSource[]; degraded: boolean }> {
-    let dubs: Dub[] = [];
+    const players: PlayerSource[] = [];
     let degraded = false;
+
+    let dubs: Dub[] = [];
+    const shikimori = release.shikimoriId ? String(release.shikimoriId) : null;
+    let ids: ExternalIds = { ...noIds(), shikimori };
     if (this.kodik) {
       try {
-        dubs = toDubs(await withTimeout(this.kodik.translations(release), 12_000));
+        const results = await withTimeout(this.kodik.translations(release), 12_000);
+        dubs = toDubs(results);
+        ids = idsFrom(results, shikimori);
       } catch (error) {
         degraded = true;
         this.log(`Kodik не ответил для «${release.title}»`, error);
       }
     }
     const kodik = kodikPlayer(dubs, kodikFallbackLink(release));
-    return { players: kodik ? [kodik] : [], degraded };
+    if (kodik) players.push(kodik);
+
+    if (this.balancers.length) {
+      if (this.ids) {
+        ids = await this.ids.resolve(release, ids).catch((error: unknown) => {
+          degraded = true;
+          this.log(`Не удалось найти ID Кинопоиска для «${release.title}»`, error);
+          return ids;
+        });
+      }
+      // CVH ищет аниме по ID Shikimori, Alloha — по Кинопоиску или IMDb.
+      if (ids.shikimori || ids.kinopoisk || ids.imdb) {
+        const found = await Promise.allSettled(this.balancers.map((b) => withTimeout(b.find(release, ids), 10_000)));
+        found.forEach((result, i) => {
+          if (result.status === 'fulfilled' && result.value) players.push(result.value);
+          if (result.status === 'rejected') {
+            degraded = true;
+            this.log(`${this.balancers[i].title} не ответил для «${release.title}»`, result.reason);
+          }
+        });
+      }
+    }
+    return { players, degraded };
   }
 }
