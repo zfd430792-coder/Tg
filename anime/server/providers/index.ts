@@ -22,6 +22,8 @@ export interface PlayersOptions {
   shikimoriUrl?: string | null;
   userAgent?: string;
   store?: Store;
+  /** Плееры из торрент-раздач (если торрент-плеер включён). */
+  torrents?: { players(releaseId: number): PlayerSource[] } | null;
   log: (message: string, error?: unknown) => void;
 }
 
@@ -49,9 +51,11 @@ export class Players {
   private kodik: KodikApi | null;
   private balancers: Balancer[];
   private ids: IdResolver | null;
+  private torrents: PlayersOptions['torrents'];
   private log: PlayersOptions['log'];
 
   constructor(options: PlayersOptions) {
+    this.torrents = options.torrents ?? null;
     this.kodik = options.kodikToken ? new KodikApi(options.kodikToken, options.kodikApi) : null;
     this.balancers = [];
     if (options.cvhPublisherId && options.playerUrl) {
@@ -72,7 +76,12 @@ export class Players {
 
   /** Какие плееры включены (для лога при запуске). */
   get enabled(): string[] {
-    return ['anilibria', this.kodik ? 'kodik (озвучки по токену)' : 'kodik (общий плеер)', ...this.balancers.map((b) => b.id)];
+    return [
+      'anilibria',
+      ...(this.torrents ? ['torrent'] : []),
+      this.kodik ? 'kodik (озвучки по токену)' : 'kodik (общий плеер)',
+      ...this.balancers.map((b) => b.id),
+    ];
   }
 
   /**
@@ -84,8 +93,10 @@ export class Players {
     const key = `players:${release.id}`;
     const { players, degraded } = await this.cache.get(key, 20 * 60_000, () => this.collect(release));
     if (degraded) this.cache.shorten(key, 60_000);
+    // Свой плеер и торрент-раздачи — из свежих данных, без кэша: раздачу могли только что добавить.
     const own = anilibriaPlayer(release);
-    return own ? [own, ...players] : players;
+    const torrents = this.torrents?.players(release.id) ?? [];
+    return [...(own ? [own] : []), ...torrents, ...players];
   }
 
   private async collect(release: Release): Promise<{ players: PlayerSource[]; degraded: boolean }> {

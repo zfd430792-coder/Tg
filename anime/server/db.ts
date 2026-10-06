@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS release_ids (
   imdb_id TEXT,
   checked_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS torrents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  release_id INTEGER NOT NULL,
+  magnet TEXT NOT NULL,
+  info_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  info TEXT,
+  error TEXT,
+  added_at TEXT NOT NULL,
+  UNIQUE (release_id, info_hash)
+);
 CREATE TABLE IF NOT EXISTS release_state (
   release_id INTEGER PRIMARY KEY,
   fresh_at TEXT,
@@ -68,6 +79,27 @@ CREATE TABLE IF NOT EXISTS release_state (
 `;
 
 const now = () => new Date().toISOString();
+
+export interface TorrentRow {
+  id: number;
+  releaseId: number;
+  magnet: string;
+  infoHash: string;
+  status: 'pending' | 'ready' | 'error';
+  info: unknown;
+  error: string | null;
+  addedAt: string;
+}
+
+function toTorrent(row: Row): TorrentRow {
+  let info: unknown = null;
+  try {
+    info = row.info ? JSON.parse(row.info) : null;
+  } catch {
+    info = null;
+  }
+  return { id: row.id, releaseId: row.release_id, magnet: row.magnet, infoHash: row.info_hash, status: row.status, info, error: row.error ?? null, addedAt: row.added_at };
+}
 
 function toUser(row: Row): User {
   return {
@@ -264,6 +296,42 @@ export class Store {
            kp_season = excluded.kp_season, imdb_id = excluded.imdb_id, checked_at = excluded.checked_at`,
       )
       .run(releaseId, ids.shikimori, ids.kinopoisk, ids.kpSeason, ids.imdb, now());
+  }
+
+  /** Раздача для торрент-плеера: добавляется командой animini torrent add, разбирается сервером. */
+  addTorrent(releaseId: number, magnet: string, infoHash: string): TorrentRow {
+    const row = this.db
+      .prepare(
+        `INSERT INTO torrents (release_id, magnet, info_hash, status, added_at) VALUES (?, ?, ?, 'pending', ?)
+         ON CONFLICT(release_id, info_hash) DO UPDATE SET magnet = excluded.magnet, status = 'pending', error = NULL
+         RETURNING *`,
+      )
+      .get(releaseId, magnet, infoHash, now()) as Row;
+    return toTorrent(row);
+  }
+
+  torrents(filter: { releaseId?: number; status?: TorrentRow['status'] } = {}): TorrentRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM torrents WHERE (? IS NULL OR release_id = ?) AND (? IS NULL OR status = ?) ORDER BY id')
+      .all(filter.releaseId ?? null, filter.releaseId ?? null, filter.status ?? null, filter.status ?? null) as Row[];
+    return rows.map(toTorrent);
+  }
+
+  torrent(id: number): TorrentRow | null {
+    const row = this.db.prepare('SELECT * FROM torrents WHERE id = ?').get(id) as Row | undefined;
+    return row ? toTorrent(row) : null;
+  }
+
+  setTorrentReady(id: number, info: unknown): void {
+    this.db.prepare(`UPDATE torrents SET status = 'ready', info = ?, error = NULL WHERE id = ?`).run(JSON.stringify(info), id);
+  }
+
+  setTorrentError(id: number, error: string): void {
+    this.db.prepare(`UPDATE torrents SET status = 'error', error = ? WHERE id = ?`).run(error.slice(0, 500), id);
+  }
+
+  removeTorrent(id: number): boolean {
+    return this.db.prepare('DELETE FROM torrents WHERE id = ?').run(id).changes > 0;
   }
 
   releaseState(releaseId: number): { freshAt: string | null; lastOrdinal: number } | null {

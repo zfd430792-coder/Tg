@@ -84,10 +84,11 @@ export interface Dub {
  * видеобалансера (Kodik, CVH, Alloha), как переключатель «плеер» на аниме-сайтах.
  */
 export interface PlayerSource {
-  /** 'anilibria', 'kodik', 'cvh', 'alloha'. */
+  /** 'anilibria', 'kodik', 'cvh', 'alloha', 'torrent-<n>'. */
   id: string;
   title: string;
-  kind: 'hls' | 'iframe';
+  /** hls — наш плеер AniLibria, iframe — плеер балансера, torrent — наш плеер из торрент-раздачи. */
+  kind: 'hls' | 'iframe' | 'torrent';
   /** Ссылка на плеер тайтла, когда озвучку выбирают внутри самого плеера. */
   link: string | null;
   /** Озвучки, которые можно выбрать снаружи. Пусто — выбор внутри плеера. */
@@ -98,7 +99,15 @@ export interface PlayerSource {
   events: 'kodik' | null;
   lastEpisode: number | null;
   season: string | null;
+  /** Какие серии есть (у торрент-раздачи); у остальных плееров не известно. */
+  episodes?: number[];
 }
+
+/** Состояние серии из торрент-раздачи: пока готовится — статус, потом адрес плейлиста. */
+export type TorrentPlayState =
+  | { status: 'starting'; message: string; peers: number; speed: number }
+  | { status: 'ready'; playlist: string; duration: number | null; height: number | null; codec: string | null }
+  | { status: 'error' | 'busy'; message: string };
 
 /** Параметры адреса встроенного плеера: у каждого балансера свои. */
 export interface FrameParams {

@@ -4,6 +4,7 @@ import { frameSrc } from '../../../shared/players.ts';
 import type { AppConfig, Dub, Episode, PlayerSource, PlayersResponse, Release, ReleaseUserState } from '../../../shared/types.ts';
 import { useFetch } from '../api.ts';
 import FramePlayer from '../components/frame-player.tsx';
+import TorrentPlayer from '../components/torrent-player.tsx';
 import { Icon } from '../components/icons.tsx';
 import { BackLink, ErrorState, Spinner } from '../components/ui.tsx';
 import { type Choice, lastChoice, resolveChoice, saveChoice, savedChoice } from '../players.ts';
@@ -95,7 +96,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   // Список серий общий для всех плееров: серии AniLibria и всё, что вышло в других плеерах.
   const otherUpTo = Math.max(
     0,
-    ...players.filter((p) => p.kind === 'iframe').map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))),
+    ...players.filter((p) => p.kind !== 'hls').map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))),
   );
   const knownUpTo = Math.max(otherUpTo, ...(release?.episodes.map((e) => e.ordinal) ?? [0]));
   const extraUpTo = player?.kind === 'iframe' ? Math.max(otherUpTo, 1) : otherUpTo || null;
@@ -106,7 +107,11 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   /** Есть ли серия в выбранном плеере и озвучке. */
   const limit = dub?.lastEpisode ?? player?.lastEpisode ?? null;
   const available = useCallback(
-    (e: Entry) => (player?.kind === 'hls' ? Boolean(e.episode?.sources.length) : !(limit && e.ordinal > limit)),
+    (e: Entry) => {
+      if (player?.kind === 'hls') return Boolean(e.episode?.sources.length);
+      if (player?.kind === 'torrent' && !player.episodes?.includes(e.ordinal)) return false;
+      return !(limit && e.ordinal > limit);
+    },
     [player, limit],
   );
   const index = entries.findIndex((e) => e.ordinal === wanted);
@@ -265,6 +270,12 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const hasNext = index < entries.length - 1;
   const subtitle = `${entry.ordinal} серия${entry.episode?.name ? ` · ${entry.episode.name}` : ''}`;
   const others = players.filter((p) => p.id !== 'anilibria');
+  /** Первый другой плеер, где эта серия есть (у раздачи — свой список серий). */
+  const fallback = others.find((p) => {
+    if (p.kind === 'torrent') return Boolean(p.episodes?.includes(entry.ordinal));
+    const last = Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0));
+    return last === 0 || last >= entry.ordinal;
+  });
   // Серию не передать в плеер (сезон неизвестен) — её выбирают в нём самом. У фильма серий нет.
   const pickEpisodeInside = player?.kind === 'iframe' && !player.frame?.episode && player.lastEpisode !== 1;
 
@@ -299,11 +310,35 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
     screen = (
       <div className="player placeholder notice-screen">
         <p>В озвучке AniLibria {entry.ordinal}-й серии ещё нет.</p>
-        {others[0] && (
-          <button className="btn" onClick={() => choose(others[0])}>
-            Смотреть в {others[0].title}
+        {fallback && (
+          <button className="btn" onClick={() => choose(fallback)}>
+            Смотреть в {fallback.title}
           </button>
         )}
+      </div>
+    );
+  } else if (player.kind === 'torrent') {
+    screen = available(entry) ? (
+      <TorrentPlayer
+        key={`${player.id}:${dub?.id ?? ''}:${entry.ordinal}`}
+        player={player.id}
+        dub={dub?.id ?? null}
+        ordinal={entry.ordinal}
+        title={release.title}
+        subtitle={subtitle}
+        poster={entry.episode?.preview ?? release.poster}
+        startAt={startAt}
+        hasPrev={hasPrev}
+        hasNext={hasNext}
+        onPrev={() => go(index - 1)}
+        onNext={() => go(index + 1)}
+        onProgress={(time, duration, options) => saveProgress(entry.ordinal, time, duration, options)}
+      />
+    ) : (
+      <div className="player placeholder notice-screen">
+        <p>
+          В {dub?.title ? `озвучке «${dub.title}»` : 'этой раздаче'} {entry.ordinal}-й серии нет.
+        </p>
       </div>
     );
   } else if (frame) {

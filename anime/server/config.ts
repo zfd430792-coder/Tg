@@ -15,6 +15,7 @@ function flag(name: string): boolean {
 }
 
 const root = path.resolve(import.meta.dirname, '..');
+const dbPath = path.resolve(root, str('DB_PATH', 'data/animini.db')!);
 
 export const config = {
   port: num('PORT', 3000),
@@ -57,7 +58,24 @@ export const config = {
 
   notifyInterval: num('NOTIFY_INTERVAL_MIN', 10) * 60_000,
 
-  dbPath: path.resolve(root, str('DB_PATH', 'data/animini.db')!),
+  /** Торрент-плеер (тест): серии прямо из торрент-раздач, сервер качает только то, что смотрят. */
+  torrents: flag('TORRENTS'),
+  torrentDir: path.resolve(root, str('TORRENT_DIR', path.join(path.dirname(dbPath), 'torrents'))!),
+  /** Сколько места на диске может занять кэш раздач, ГБ. */
+  torrentCacheGb: num('TORRENT_CACHE_GB', 10),
+  /** Сколько серий сервер может готовить одновременно (ffmpeg). */
+  torrentSessions: num('TORRENT_SESSIONS', 2),
+  /** Сколько отдавать другим участникам раздачи, КБ/с. */
+  torrentUploadKbps: num('TORRENT_UPLOAD_KBPS', 1000),
+  /** 0 — без DHT (только трекеры и адреса из magnet), для тестов. */
+  torrentDht: process.env.TORRENT_DHT !== '0',
+  /** 1 — пускать участников раздачи с локальных адресов (только для тестов на одной машине). */
+  torrentLocalPeers: flag('TORRENT_LOCAL_PEERS'),
+  /** Пути к ffmpeg и ffprobe, если они не в PATH. */
+  ffmpeg: str('TORRENT_FFMPEG', 'ffmpeg')!,
+  ffprobe: str('TORRENT_FFPROBE', 'ffprobe')!,
+
+  dbPath,
   webDist: path.resolve(root, 'web/dist'),
 };
 

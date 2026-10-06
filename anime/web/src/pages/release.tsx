@@ -72,7 +72,7 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   if (!release) return null;
 
   const players = playersQuery.data?.players ?? [];
-  const others = players.filter((p) => p.kind === 'iframe');
+  const others = players.filter((p) => p.kind !== 'hls');
   const othersUpTo = Math.max(0, ...others.map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))));
   // Плеер без сведений о числе серий (общий Kodik без токена и т.п.) — значит, есть хотя бы первая.
   const resume = resumeEpisode(release, state.progress, others.length > 0 ? Math.max(othersUpTo, 1) : 0);

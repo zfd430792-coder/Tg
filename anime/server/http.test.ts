@@ -14,6 +14,7 @@ import { Store } from './db.ts';
 import { buildServer } from './http.ts';
 import { HostRegistry } from './media.ts';
 import { Players } from './providers/index.ts';
+import type { TorrentLibrary } from './torrents/library.ts';
 
 const TOKEN = '123456:TEST';
 const root = path.resolve(import.meta.dirname, '..');
@@ -67,6 +68,15 @@ before(async () => {
     notifier: null,
     botUsername: 'animini_bot',
     players: new Players({ kodikToken: 'test-kodik', kodikApi: `${origin}/kodik-api`, log: () => undefined }),
+    // Торрент-плеер подменяем: его самого проверяет server/torrents/torrents.test.ts.
+    torrents: {
+      play: (_player: string, _dub: string | null, ordinal: number) =>
+        ordinal === 1
+          ? { status: 'ready', session: 'a'.repeat(20), duration: 60, height: 1080, codec: 'h264' }
+          : { status: 'starting', message: 'Подключаюсь к раздаче…', peers: 0, speed: 0 },
+      playlist: async (session: string) => (session === 'a'.repeat(20) ? '#EXTM3U\n#EXTINF:4,\ns00000.m4s\n' : null),
+      file: () => null,
+    } as unknown as TorrentLibrary,
   });
 });
 
@@ -181,6 +191,28 @@ describe('страница плеера CVH', () => {
     const url = '/embed/cvh?aggr=mali&id=50000';
     assert.equal((await app.inject({ url, headers: { ...player, referer: 'https://evil.example/page' } })).statusCode, 403);
     assert.equal((await app.inject({ url, headers: { ...player, referer: 'https://anime.test/' } })).statusCode, 200);
+  });
+});
+
+describe('торрент-плеер', () => {
+  test('готовая серия — адрес плейлиста, неверный запрос — 400', async () => {
+    const play = (payload: unknown) => app.inject({ method: 'POST', url: '/api/torrent/play', payload: payload as object });
+    const ready = await play({ player: 'torrent-1', dub: 'torrent-1:e0', ordinal: 1 });
+    assert.equal(ready.statusCode, 200);
+    assert.deepEqual(ready.json(), { status: 'ready', playlist: `/api/torrent/hls/${'a'.repeat(20)}/index.m3u8`, duration: 60, height: 1080, codec: 'h264' });
+    assert.equal((await play({ player: 'torrent-1', dub: null, ordinal: 2 })).json().status, 'starting');
+    for (const bad of [{ player: 'kodik', ordinal: 1 }, { player: 'torrent-1', dub: '../x', ordinal: 1 }, { player: 'torrent-1', ordinal: 0 }, { player: 'torrent-1', ordinal: 1.5 }]) {
+      assert.equal((await play(bad)).statusCode, 400, JSON.stringify(bad));
+    }
+  });
+
+  test('плейлист и сегменты только своей сессии', async () => {
+    const playlist = await app.inject(`/api/torrent/hls/${'a'.repeat(20)}/index.m3u8`);
+    assert.equal(playlist.statusCode, 200);
+    assert.match(String(playlist.headers['content-type']), /mpegurl/);
+    assert.equal((await app.inject(`/api/torrent/hls/${'b'.repeat(20)}/index.m3u8`)).statusCode, 404);
+    assert.equal((await app.inject(`/api/torrent/hls/${'a'.repeat(20)}/s00000.m4s`)).statusCode, 404, 'нет файла — 404');
+    assert.equal((await app.inject('/api/torrent/hls/..%2F..%2Fetc/passwd')).statusCode, 404);
   });
 });
 

@@ -1,0 +1,9 @@
+{
+  "name": "webrtc-polyfill",
+  "version": "0.0.0-stub",
+  "description": "Заглушка: серверу WebRTC не нужен (webtorrent качает раздачи по TCP), а настоящий пакет тянет нативный node-datachannel.",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "license": "MIT"
+}

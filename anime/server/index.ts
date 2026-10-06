@@ -8,6 +8,7 @@ import { buildServer } from './http.ts';
 import { HostRegistry } from './media.ts';
 import { Notifier } from './notifier.ts';
 import { Players } from './providers/index.ts';
+import { TorrentLibrary } from './torrents/library.ts';
 
 const hosts = new HostRegistry(config.hlsHosts);
 const api = new AniLiberty({
@@ -63,6 +64,30 @@ if (config.playerUrl && config.siteUrl && new URL(config.playerUrl).origin === n
 if (config.cvhPublisherId && !config.playerUrl) {
   console.warn('CVH выключен: для его плеера нужен отдельный поддомен — задайте PLAYER_DOMAIN (например, player.<ваш домен>).');
 }
+// Торрент-плеер (тест): включается TORRENTS=1, нужен ffmpeg. webtorrent грузим только тогда,
+// и если торренты не поднялись, сайт работает без них.
+let torrents: TorrentLibrary | null = null;
+if (config.torrents) {
+  try {
+    const { TorrentStreamer } = await import('./torrents/streamer.ts');
+    const streamer = new TorrentStreamer({
+      dir: config.torrentDir,
+      cacheBytes: config.torrentCacheGb * 1024 ** 3,
+      maxSessions: config.torrentSessions,
+      uploadLimit: config.torrentUploadKbps * 1024,
+      dht: config.torrentDht,
+      allowLocalPeers: config.torrentLocalPeers,
+      ffmpeg: config.ffmpeg,
+      ffprobe: config.ffprobe,
+      log,
+    });
+    await streamer.start();
+    torrents = new TorrentLibrary({ store, streamer, log });
+    torrents.start();
+  } catch (error) {
+    log('Торрент-плеер не запустился, сайт работает без него', error);
+  }
+}
 const players = new Players({
   kodikToken: config.kodikToken,
   kodikApi: config.kodikApi,
@@ -74,10 +99,11 @@ const players = new Players({
   shikimoriUrl: config.shikimoriUrl,
   userAgent: `${config.appName}/0.1 (+${config.siteUrl ?? 'local'})`,
   store,
+  torrents,
   log,
 });
 console.log(`Плееры: ${players.enabled.join(', ')}`);
-const app = await buildServer({ config, api, store, hosts, notifier, botUsername, players });
+const app = await buildServer({ config, api, store, hosts, notifier, botUsername, players, torrents });
 await app.listen({ port: config.port, host: config.host });
 
 if (telegram) {

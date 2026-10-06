@@ -1,10 +1,11 @@
 // HTTP API для фронтенда, прокси видео и раздача собранного фронтенда.
 
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
-import type { AppConfig, ProgressInput, Release, ReleaseUserState, User } from '../shared/types.ts';
+import type { AppConfig, ProgressInput, Release, ReleaseUserState, TorrentPlayState, User } from '../shared/types.ts';
 import { UpstreamError, type AniLiberty, type CatalogQuery } from './anilibria.ts';
 import { validateInitData } from './auth.ts';
 import type { Config } from './config.ts';
@@ -13,6 +14,7 @@ import { buildMaster, proxiedUrl, rewritePlaylist, type HostRegistry } from './m
 import type { Notifier } from './notifier.ts';
 import { cvhPage, stringQuery } from './providers/balancers.ts';
 import type { Players } from './providers/index.ts';
+import type { TorrentLibrary } from './torrents/library.ts';
 
 export interface HttpDeps {
   config: Config;
@@ -21,6 +23,8 @@ export interface HttpDeps {
   hosts: HostRegistry;
   notifier: Notifier | null;
   players: Players;
+  /** Торрент-плеер (тест); null — выключен. */
+  torrents?: TorrentLibrary | null;
   /** Есть ли у бота право писать пользователю — нужно для подписок. */
   botUsername: string | null;
 }
@@ -331,6 +335,46 @@ export async function buildServer(deps: HttpDeps) {
     await cardFor(input.releaseId);
     return store.saveProgress(user.id, input);
   });
+
+  // ---- Торрент-плеер (тест): серия готовится на сервере, плеер играет её HLS ----
+
+  const torrents = deps.torrents;
+  if (torrents) {
+    app.post('/api/torrent/play', async (request): Promise<TorrentPlayState> => {
+      const b = (request.body ?? {}) as Record<string, unknown>;
+      const player = typeof b.player === 'string' ? b.player : '';
+      const dub = typeof b.dub === 'string' ? b.dub : null;
+      const ordinal = Number(b.ordinal);
+      if (
+        !/^torrent-\d{1,9}$/.test(player) ||
+        (dub !== null && !/^torrent-\d{1,9}:[ex]\d{1,4}$/.test(dub)) ||
+        !Number.isInteger(ordinal) ||
+        ordinal < 1 ||
+        ordinal > 3000
+      ) {
+        throw new HttpError(400, 'Неверный запрос');
+      }
+      const state = torrents.play(player, dub, ordinal);
+      if (state.status !== 'ready') return state;
+      return { status: 'ready', playlist: `/api/torrent/hls/${state.session}/index.m3u8`, duration: state.duration, height: state.height, codec: state.codec };
+    });
+
+    app.get('/api/torrent/hls/:session/:file', async (request, reply) => {
+      const { session, file } = request.params as { session: string; file: string };
+      if (!/^[0-9a-f]{20}$/.test(session)) throw new HttpError(404, 'Не найдено');
+      if (file === 'index.m3u8') {
+        const text = await torrents.playlist(session);
+        if (text === null) throw new HttpError(404, 'Серия больше не готовится — откройте её снова');
+        return reply.header('cache-control', 'no-cache').type('application/vnd.apple.mpegurl').send(text);
+      }
+      const full = torrents.file(session, file);
+      if (!full || !(await stat(full).catch(() => null))) throw new HttpError(404, 'Не найдено');
+      return reply
+        .header('cache-control', 'private, max-age=3600')
+        .type(file.endsWith('.mp4') ? 'video/mp4' : 'video/iso.segment')
+        .send(createReadStream(full));
+    });
+  }
 
   app.all('/api/*', async () => {
     throw new HttpError(404, 'Нет такого метода API');
