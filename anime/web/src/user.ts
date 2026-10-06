@@ -98,15 +98,20 @@ const local: UserData = {
   async saveProgress(card, input) {
     rememberCard(card);
     const all = readJson<Record<string, LocalProgress>>(PROGRESS, {});
-    let previousWatched = Boolean(all[input.episodeId]?.watched);
+    const same = all[input.episodeId];
+    let previousWatched = Boolean(same?.watched);
+    let kept = same && same.duration > 0 ? same : undefined;
     // Та же серия под другим ID (см. Store.saveProgress на сервере) — оставляем одну запись.
     for (const [key, p] of Object.entries(all)) {
       if (key === input.episodeId || p.releaseId !== input.releaseId || p.ordinal !== input.ordinal) continue;
       previousWatched ||= Boolean(p.watched);
+      if (!kept && p.duration > 0) kept = p;
       delete all[key];
     }
     const watched = Boolean(previousWatched || input.watched || (input.duration > 0 && input.time / input.duration >= 0.92));
-    all[input.episodeId] = { ...input, watched, updatedAt: new Date().toISOString() };
+    // duration = 0 — только отметка «серия открыта»: сохранённую позицию она не затирает.
+    const position = input.duration === 0 && kept ? { time: kept.time, duration: kept.duration } : {};
+    all[input.episodeId] = { ...input, ...position, watched, updatedAt: new Date().toISOString() };
     const entries = Object.entries(all);
     if (entries.length > 3000) {
       entries.sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt));

@@ -220,17 +220,17 @@ describe('Alloha', () => {
 describe('CVH', () => {
   const item = (voiceStudio: string, episode: number, season = 1) => ({ voiceStudio, season, episode });
 
-  test('аниме — по ID Shikimori, озвучки с числом серий, запрос с адресом нашего сайта', async () => {
+  test('аниме — по ID Shikimori, озвучки с числом серий, плеер на поддомене', async () => {
     const stub = stubFetch({
       'https://cvh.test/api/v1/player/sv/playlist': (url, init) => {
         assert.deepEqual([url.searchParams.get('pub'), url.searchParams.get('aggr'), url.searchParams.get('id')], ['P', 'mali', '777']);
-        assert.equal((init?.headers as Record<string, string>).referer, 'https://anime.example/');
+        assert.equal((init?.headers as Record<string, string>).referer, 'https://player.anime.example/');
         return { isSerial: true, items: [item('AniDub Online', 1), item('AniDub Online', 2), item('Dream Cast', 1), item('Субтитры', 3)] };
       },
     });
     try {
-      const player = await new Cvh('P', 'https://cvh.test/api/v1', 'https://anime.example').find(release, ids());
-      assert.equal(player?.link, '/embed/cvh?aggr=mali&id=777');
+      const player = await new Cvh('P', 'https://cvh.test/api/v1', 'https://player.anime.example').find(release, ids());
+      assert.equal(player?.link, 'https://player.anime.example/embed/cvh?aggr=mali&id=777');
       assert.deepEqual(player?.dubs.map((d) => [d.title, d.lastEpisode]), [
         ['AniDub Online', 2],
         ['Dream Cast', 1],
@@ -238,9 +238,8 @@ describe('CVH', () => {
       ]);
       assert.equal(player?.lastEpisode, 3);
       assert.equal(player?.events, 'kodik');
-      // Ссылка на нашу страницу — относительная, такой и остаётся.
       const src = frameSrc(player!.dubs[1].link, { params: player!.frame!, season: player!.season, episode: 1, hideDubs: true });
-      assert.equal(src, '/embed/cvh?aggr=mali&id=777&voice=Dream+Cast&only=1&season=1&episode=1');
+      assert.equal(src, 'https://player.anime.example/embed/cvh?aggr=mali&id=777&voice=Dream+Cast&only=1&season=1&episode=1');
     } finally {
       stub.restore();
     }
@@ -256,7 +255,7 @@ describe('CVH', () => {
       },
     });
     try {
-      const cvh = new Cvh('P', 'https://cvh.test/api/v1', null);
+      const cvh = new Cvh('P', 'https://cvh.test/api/v1', 'https://player.test');
       assert.equal(await cvh.find(release, ids()), null);
       status = 403;
       const forbidden = await cvh.find(release, ids());
@@ -272,16 +271,22 @@ describe('CVH', () => {
     }
   });
 
-  test('страница CVH: проверенные атрибуты, свои хранилища и события в формате Kodik', () => {
-    const page = cvhPage({ aggr: 'mali', id: '777', season: '1', episode: '3', voice: 'Dream "Cast"', only: '1' }, 'P', 'https://sdk.test/v.js?a=1&b=2');
-    assert.ok(page?.includes('<video-player data-publisher-id="P" data-aggregator="mali" data-title-id="777" ident="cvh-mali-777" season="1" episode="3" only-voice="Dream &quot;Cast&quot;">'));
+  test('страница CVH: проверенные атрибуты и события приложению в формате Kodik', () => {
+    const page = cvhPage({ aggr: 'mali', id: '777', season: '1', episode: '3', voice: 'Dream "Cast"', only: '1' }, 'P', 'https://sdk.test/v.js?a=1&b=2', 'https://anime.example');
+    assert.ok(
+      page?.includes(
+        '<video-player data-publisher-id="P" data-aggregator="mali" data-title-id="777" ident="cvh-mali-777" season="1" episode="3" priority-voice="Dream &quot;Cast&quot;" only-voice="Dream &quot;Cast&quot;">',
+      ),
+    );
     assert.ok(page?.includes("send('kodik_player_time_update'"));
-    assert.ok(page?.includes("Object.defineProperty(window, name"));
+    assert.ok(page?.includes('parent.postMessage({ key: key, value: value }, "https://anime.example")'), 'события — только приложению');
     assert.ok(page?.includes('src="https://sdk.test/v.js?a=1&amp;b=2"'));
-    assert.ok(cvhPage({ aggr: 'mali', id: '1', voice: 'AniDub' }, 'P', 'https://sdk.test/v.js')?.includes('priority-voice="AniDub"'));
-    assert.equal(cvhPage({ aggr: 'imdb', id: '1' }, 'P', 'x'), null);
-    assert.equal(cvhPage({ aggr: 'kp', id: '1"><script>' }, 'P', 'x'), null);
-    const loose = cvhPage({ aggr: 'kp', id: '1', season: '1"', episode: 'x' }, 'P', 'x');
+    const free = cvhPage({ aggr: 'mali', id: '1', voice: 'AniDub' }, 'P', 'https://sdk.test/v.js', null);
+    assert.ok(free?.includes('priority-voice="AniDub"') && !free.includes('only-voice'));
+    assert.ok(free?.includes('}, "*")'), 'адрес приложения неизвестен — любому родителю');
+    assert.equal(cvhPage({ aggr: 'imdb', id: '1' }, 'P', 'x', null), null);
+    assert.equal(cvhPage({ aggr: 'kp', id: '1"><script>' }, 'P', 'x', null), null);
+    const loose = cvhPage({ aggr: 'kp', id: '1', season: '1"', episode: 'x' }, 'P', 'x', null);
     assert.ok(loose && !loose.includes(' season=') && !loose.includes(' episode='));
   });
 });
@@ -436,6 +441,7 @@ describe('список плееров', () => {
         kodikApi: 'https://kodik.test',
         cvhPublisherId: 'P',
         cvhApi: 'https://cvh.test/api/v1',
+        playerUrl: 'https://player.test',
         allohaToken: 'A',
         allohaApi: 'https://alloha.test/v2',
         shikimoriUrl: null,
@@ -443,6 +449,8 @@ describe('список плееров', () => {
         log: () => undefined,
       });
       assert.deepEqual(players.enabled, ['anilibria', 'kodik (озвучки по токену)', 'cvh', 'alloha']);
+      const noPlayerDomain = new Players({ kodikToken: null, kodikApi: 'x', cvhPublisherId: 'P', log: () => undefined });
+      assert.deepEqual(noPlayerDomain.enabled, ['anilibria', 'kodik (общий плеер)'], 'без поддомена плеера CVH выключен');
       assert.deepEqual((await players.forRelease(release)).map((p) => p.id), ['kodik', 'cvh', 'alloha']);
       assert.equal(store.releaseIds(1)?.kinopoisk, '555');
     } finally {

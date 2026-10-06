@@ -166,31 +166,32 @@ export class Alloha implements Balancer {
 /**
  * CVH (CDNVideoHub): плеер — веб-компонент <video-player> из их SDK, видео — с серверов
  * VK. Аниме ищет по ID MyAnimeList (он же ID Shikimori, есть в AniLiberty), остальное —
- * по Кинопоиску. Плеер показываем на своей странице /embed/cvh (см. cvhPage). Озвучки и
- * число серий берём из того же API, к которому ходит SDK: 204 — тайтла нет.
+ * по Кинопоиску. Плеер показываем на своей странице /embed/cvh на отдельном поддомене
+ * (см. cvhPage). Озвучки и число серий берём из того же API, к которому ходит SDK:
+ * 204 — тайтла нет.
  */
 export class Cvh implements Balancer {
   id = 'cvh';
   title = 'CVH';
   private publisherId: string;
   private base: string;
-  private referer: string | null;
+  private playerUrl: string;
 
-  /** referer — адрес нашего сайта: доступ к API CVH привязан к домену сайта партнёра. */
-  constructor(publisherId: string, base: string, referer: string | null) {
+  /** playerUrl — поддомен для плеера (https://player.example.com): по нему CVH узнаёт партнёра. */
+  constructor(publisherId: string, base: string, playerUrl: string) {
     this.publisherId = publisherId;
     this.base = base;
-    this.referer = referer;
+    this.playerUrl = playerUrl;
   }
 
   async find(_release: Release, ids: ExternalIds): Promise<PlayerSource | null> {
     const aggr = ids.shikimori ? 'mali' : ids.kinopoisk ? 'kp' : null;
     const id = ids.shikimori ?? ids.kinopoisk;
     if (!aggr || !id || !/^\d{1,10}$/.test(id)) return null;
-    const link = `/embed/cvh?aggr=${aggr}&id=${id}`;
+    const link = `${this.playerUrl}/embed/cvh?aggr=${aggr}&id=${id}`;
     const query = new URLSearchParams({ pub: this.publisherId, aggr, id });
     const response = await fetch(`${this.base}/player/sv/playlist?${query}`, {
-      headers: { accept: 'application/json', ...(this.referer ? { referer: `${this.referer}/` } : {}) },
+      headers: { accept: 'application/json', referer: `${this.playerUrl}/` },
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 204 || response.status === 404) return null;
@@ -254,13 +255,20 @@ export class Cvh implements Balancer {
 
 const escapeAttr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
+/** Только строковые параметры: ?voice=a&voice=b приходит массивом. */
+export function stringQuery(query: unknown): Record<string, string | undefined> {
+  const entries = Object.entries((query ?? {}) as Record<string, unknown>);
+  return Object.fromEntries(entries.map(([key, value]) => [key, typeof value === 'string' ? value : undefined]));
+}
+
 /**
- * Страница-обёртка для CVH: их SDK встраивается скриптом, а не ссылкой. Она открыта с
- * нашего домена, как у AnimeGo и YummyAnime: по домену CVH узнаёт сайт партнёра.
- * События веб-компонента (currentTime, playComplete…) пересылаем родителю в формате
+ * Страница-обёртка для CVH: их SDK встраивается скриптом, а не ссылкой. Её отдаём только
+ * с отдельного поддомена (см. config.playerUrl): там у скриптов CVH свой origin, и до
+ * данных приложения (вход через Telegram, localStorage, DOM) браузер их не пустит.
+ * События веб-компонента (currentTime, playComplete…) пересылаем приложению в формате
  * Kodik — так прогресс сохраняется так же, как у Kodik.
  */
-export function cvhPage(query: Record<string, string | undefined>, publisherId: string, sdk: string): string | null {
+export function cvhPage(query: Record<string, string | undefined>, publisherId: string, sdk: string, appOrigin: string | null): string | null {
   const aggr = query.aggr ?? '';
   const id = query.id ?? '';
   if (!['mali', 'kp'].includes(aggr) || !/^\d{1,10}$/.test(id)) return null;
@@ -273,36 +281,22 @@ export function cvhPage(query: Record<string, string | undefined>, publisherId: 
   if (query.season && /^\d{1,3}$/.test(query.season)) attrs.season = query.season;
   if (query.episode && /^\d{1,4}$/.test(query.episode)) attrs.episode = query.episode;
   const voice = query.voice?.trim();
-  if (voice && voice.length <= 80 && !/[\u0000-\u001f]/.test(voice)) attrs[query.only === '1' ? 'only-voice' : 'priority-voice'] = voice;
+  if (voice && voice.length <= 80 && !/[\u0000-\u001f]/.test(voice)) {
+    // priority-voice выбирает озвучку, only-voice оставляет в плеере только её.
+    attrs['priority-voice'] = voice;
+    if (query.only === '1') attrs['only-voice'] = voice;
+  }
   const element = Object.entries(attrs)
     .map(([key, value]) => `${key}="${escapeAttr(value)}"`)
     .join(' ');
+  const target = JSON.stringify(appOrigin ?? '*').replace(/</g, '\\u003c');
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>html,body{margin:0;height:100%;background:#000}video-player{display:block;width:100%;height:100%}</style></head>
 <body><video-player ${element}></video-player>
 <script>
 (function () {
-  // Скрипты CVH работают на нашем домене. Чтобы они не видели данные приложения (вход
-  // через Telegram, историю) и не сорили в них, даём им пустые хранилища в памяти.
-  // От целенаправленного чтения через parent это не защищает, но обычные скрипты
-  // плеера и аналитики данных сайта не увидят.
-  var memory = function () {
-    var data = {};
-    return {
-      getItem: function (k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
-      setItem: function (k, v) { data[k] = String(v); },
-      removeItem: function (k) { delete data[k]; },
-      clear: function () { data = {}; },
-      key: function (i) { return Object.keys(data)[i] || null; },
-      get length() { return Object.keys(data).length; }
-    };
-  };
-  ['localStorage', 'sessionStorage'].forEach(function (name) {
-    try { Object.defineProperty(window, name, { value: memory(), configurable: true }); } catch (error) {}
-  });
-
   var el = document.querySelector('video-player');
-  var send = function (key, value) { parent.postMessage({ key: key, value: value }, location.origin); };
+  var send = function (key, value) { parent.postMessage({ key: key, value: value }, ${target}); };
   var num = function (v) { if (v && typeof v === 'object') v = v.number || v.episodeNumber || v.seasonNumber; var n = Number(v); return n > 0 ? n : null; };
   var episode = num(el.getAttribute('episode'));
   var season = num(el.getAttribute('season'));

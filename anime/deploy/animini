@@ -45,8 +45,14 @@ doctor() {
 
   local players=AniLibria
   players+=", Kodik$(grep -q '^KODIK_TOKEN=.' "$APP/.env" && echo ' (с выбором озвучки)' || echo ' (общий плеер, озвучка в его меню)')"
-  grep -q '^CVH_PUBLISHER_ID=.' "$APP/.env" && players+=", CVH"
-  grep -q '^ALLOHA_TOKEN=.' "$APP/.env" && players+=", Alloha"
+  if grep -q '^CVH_PUBLISHER_ID=.' "$APP/.env"; then
+    local player_domain
+    player_domain=$(sed -n 's/^PLAYER_DOMAIN=//p' "$APP/.env" | tail -n 1)
+    players+=", CVH$([[ -n $player_domain ]] && echo " (плеер на $player_domain)" || echo ' — выключен: нет PLAYER_DOMAIN')"
+  fi
+  if grep -q '^ALLOHA_TOKEN=.' "$APP/.env"; then
+    players+=", Alloha$(grep -q '^KODIK_TOKEN=.' "$APP/.env" || echo ' (ID Кинопоиска — только через Shikimori, из России он недоступен)')"
+  fi
   echo "Плееры: $players"
 
   echo "Контейнеры"

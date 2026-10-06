@@ -11,7 +11,7 @@ import type { Config } from './config.ts';
 import type { Store } from './db.ts';
 import { buildMaster, proxiedUrl, rewritePlaylist, type HostRegistry } from './media.ts';
 import type { Notifier } from './notifier.ts';
-import { cvhPage } from './providers/balancers.ts';
+import { cvhPage, stringQuery } from './providers/balancers.ts';
 import type { Players } from './providers/index.ts';
 
 export interface HttpDeps {
@@ -48,6 +48,14 @@ function releaseId(value: string): number {
   const id = int(value, 1, 10_000_000);
   if (id === undefined) throw new HttpError(400, 'Неверный id релиза');
   return id;
+}
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 function parseProgress(body: unknown): ProgressInput {
@@ -122,6 +130,15 @@ export async function buildServer(deps: HttpDeps) {
 
   const cacheFor = (reply: FastifyReply, seconds: number) => reply.header('cache-control', `public, max-age=${seconds}`);
 
+  // Поддомен плеера CVH (config.playerUrl) отдаёт только страницы /embed/*: приложение и
+  // API живут на основном домене, а на этом origin работают только сторонние скрипты.
+  const playerHost = config.playerUrl ? new URL(config.playerUrl).host.toLowerCase() : null;
+  const appOrigin = config.siteUrl ? new URL(config.siteUrl).origin : null;
+  const onPlayerHost = (request: FastifyRequest) => playerHost !== null && request.host.toLowerCase() === playerHost;
+  app.addHook('onRequest', async (request, reply) => {
+    if (onPlayerHost(request) && !request.url.startsWith('/embed/')) return reply.code(404).send({ error: 'Не найдено' });
+  });
+
   app.get('/api/health', async () => ({ ok: true }));
 
   app.get('/api/config', async (): Promise<AppConfig> => ({
@@ -193,11 +210,14 @@ export async function buildServer(deps: HttpDeps) {
     return { players: await deps.players.forRelease(release) };
   });
 
-  // Обёртка для плеера CVH: его встраивают скриптом, а не ссылкой. Страница открывается
-  // с нашего домена — по нему CVH узнаёт сайт партнёра (см. cvhPage).
+  // Обёртка для плеера CVH: его встраивают скриптом, а не ссылкой. Отдаём её только с
+  // поддомена плеера (см. cvhPage) и только во фрейм нашего приложения: иначе любой сайт
+  // мог бы показывать CVH с нашим ID издателя.
   app.get('/embed/cvh', async (request, reply) => {
-    if (!config.cvhPublisherId) throw new HttpError(404, 'CVH не настроен');
-    const page = cvhPage(request.query as Record<string, string | undefined>, config.cvhPublisherId, config.cvhSdk);
+    if (!config.cvhPublisherId || !onPlayerHost(request)) throw new HttpError(404, 'Не найдено');
+    const referer = request.headers.referer;
+    if (appOrigin && referer && originOf(referer) !== appOrigin) throw new HttpError(403, 'Плеер открывается только из приложения');
+    const page = cvhPage(stringQuery(request.query), config.cvhPublisherId, config.cvhSdk, appOrigin);
     if (!page) throw new HttpError(400, 'Неверные параметры плеера');
     return reply
       .header('referrer-policy', 'strict-origin-when-cross-origin')

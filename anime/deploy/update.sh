@@ -53,8 +53,17 @@ main() {
     log "изменился Caddyfile — перезапущу Caddy"
   fi
 
-  if (cd "$app" && docker compose build --pull app && docker compose up -d --remove-orphans &&
-    { ((${#recreate[@]} == 0)) || docker compose up -d "${recreate[@]}"; }) && healthy "$app"; then
+  # Новый Caddyfile сначала проверяем отдельным контейнером: с ошибкой в нём Caddy не
+  # запустится, и сайт перестанет открываться, хотя само приложение здорово.
+  local caddy_valid=1
+  if ((${#recreate[@]} > 0)) &&
+    ! (cd "$app" && docker compose run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile) >/dev/null 2>&1; then
+    log "новый Caddyfile не прошёл проверку Caddy"
+    caddy_valid=0
+  fi
+
+  if ((caddy_valid)) && (cd "$app" && docker compose build --pull app && docker compose up -d --remove-orphans &&
+    { ((${#recreate[@]} == 0)) || docker compose up -d "${recreate[@]}"; }) && healthy "$app" && caddy_up "$app" "${#recreate[@]}"; then
     echo "$remote" >"$STATE/deployed"
     rm -f "$STATE/failed"
     docker image prune -f >/dev/null 2>&1 || true
@@ -67,6 +76,8 @@ main() {
     log "новая версия не запустилась — откатываю на ${deployed:0:7}"
     git -C "$DIR" reset --quiet --hard "$deployed"
     (cd "$app" && docker compose up -d --build --remove-orphans) || true
+    # Caddy с примонтированным старым Caddyfile пересоздаём, если меняли его.
+    ((${#recreate[@]} == 0)) || (cd "$app" && docker compose up -d "${recreate[@]}") || true
     if healthy "$app"; then
       log "откат удался"
     else
@@ -74,6 +85,16 @@ main() {
     fi
   fi
   exit 1
+}
+
+# Если Caddy пересоздавали, он должен работать, а не перезапускаться по кругу.
+caddy_up() {
+  local app=$1 recreated=$2 i
+  ((recreated > 0)) || return 0
+  for ((i = 0; i < 5; i++)); do
+    sleep 3
+    (cd "$app" && docker compose ps --status running --services 2>/dev/null) | grep -qx caddy || return 1
+  done
 }
 
 # Приложение отвечает на /api/health изнутри контейнера.

@@ -15,6 +15,7 @@ services:
       - "443:443"
     environment:
       DOMAIN: ${DOMAIN:?укажите DOMAIN в .env}
+      PLAYER_DOMAIN: ${PLAYER_DOMAIN:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

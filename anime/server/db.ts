@@ -206,18 +206,25 @@ export class Store {
     // вышла у AniLibria, или старый общий для всех тайтлов ID n<номер>. Оставляем одну
     // запись, отметку «просмотрено» переносим.
     const others = this.db
-      .prepare('DELETE FROM progress WHERE user_id = ? AND release_id = ? AND ordinal = ? AND episode_id <> ? RETURNING watched')
+      .prepare('DELETE FROM progress WHERE user_id = ? AND release_id = ? AND ordinal = ? AND episode_id <> ? RETURNING watched, time, duration')
       .all(userId, input.releaseId, input.ordinal, input.episodeId) as Row[];
     if (others.some((r) => r.watched)) watched = true;
+    // duration = 0 — только отметка «серия открыта» (плеер не сообщает время): сохранённую
+    // позицию она не затирает, а лишь поднимает тайтл в «Продолжить просмотр».
+    const kept = input.duration === 0 ? others.find((r) => r.duration > 0) : undefined;
+    const time = kept ? kept.time : input.time;
+    const duration = kept ? kept.duration : input.duration;
     const row = this.db
       .prepare(
         `INSERT INTO progress (user_id, release_id, episode_id, ordinal, time, duration, watched, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, episode_id) DO UPDATE SET time = excluded.time, duration = excluded.duration,
+         ON CONFLICT(user_id, episode_id) DO UPDATE SET
+           time = CASE WHEN excluded.duration > 0 THEN excluded.time ELSE time END,
+           duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE duration END,
            ordinal = excluded.ordinal, watched = MAX(watched, excluded.watched), updated_at = excluded.updated_at
          RETURNING *`,
       )
-      .get(userId, input.releaseId, input.episodeId, input.ordinal, input.time, input.duration, watched ? 1 : 0, now()) as Row;
+      .get(userId, input.releaseId, input.episodeId, input.ordinal, time, duration, watched ? 1 : 0, now()) as Row;
     return toProgress(row);
   }
 

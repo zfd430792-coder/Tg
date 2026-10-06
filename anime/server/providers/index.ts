@@ -16,8 +16,8 @@ export interface PlayersOptions {
   cvhApi?: string;
   allohaToken?: string | null;
   allohaApi?: string;
-  /** Адрес нашего сайта: CVH узнаёт партнёра по домену. */
-  siteUrl?: string | null;
+  /** Поддомен для плеера CVH (https://player.example.com); без него CVH выключен. */
+  playerUrl?: string | null;
   /** Адрес Shikimori для поиска ID Кинопоиска (нужен Alloha); null — не ходить туда. */
   shikimoriUrl?: string | null;
   userAgent?: string;
@@ -54,8 +54,8 @@ export class Players {
   constructor(options: PlayersOptions) {
     this.kodik = options.kodikToken ? new KodikApi(options.kodikToken, options.kodikApi) : null;
     this.balancers = [];
-    if (options.cvhPublisherId) {
-      this.balancers.push(new Cvh(options.cvhPublisherId, options.cvhApi ?? 'https://plapi.cdnvideohub.com/api/v1', options.siteUrl ?? null));
+    if (options.cvhPublisherId && options.playerUrl) {
+      this.balancers.push(new Cvh(options.cvhPublisherId, options.cvhApi ?? 'https://plapi.cdnvideohub.com/api/v1', options.playerUrl));
     }
     if (options.allohaToken) this.balancers.push(new Alloha(options.allohaToken, options.allohaApi ?? 'https://apbugall.org/v2'));
     // ID Кинопоиска ищем, только если он кому-то нужен (Alloha).

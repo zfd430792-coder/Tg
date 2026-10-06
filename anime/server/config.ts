@@ -41,6 +41,12 @@ export const config = {
 
   /** CVH (CDNVideoHub): ID издателя (data-publisher-id). Выдают после регистрации сайта. */
   cvhPublisherId: str('CVH_PUBLISHER_ID'),
+  /**
+   * Адрес страницы плеера CVH — отдельный поддомен, например https://player.example.com.
+   * Скрипты CVH работают на нём, а не на домене приложения, поэтому не видят данные входа
+   * зрителей через Telegram. Без него CVH выключен. PLAYER_URL — для разработки (http).
+   */
+  playerUrl: (str('PLAYER_URL') ?? (str('PLAYER_DOMAIN') ? `https://${str('PLAYER_DOMAIN')}` : null))?.replace(/\/+$/, '') ?? null,
   cvhApi: str('CVH_API', 'https://plapi.cdnvideohub.com/api/v1')!.replace(/\/+$/, ''),
   cvhSdk: str('CVH_SDK', 'https://player.cdnvideohub.com/s2/stable/video-player.umd.js')!,
   /** Alloha: токен партнёра. Тайтл ищет по ID Кинопоиска. */

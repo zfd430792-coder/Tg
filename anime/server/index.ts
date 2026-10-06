@@ -54,6 +54,15 @@ if (telegram) {
   notifier.start(config.notifyInterval);
 }
 
+// Плеер CVH работает только на отдельном поддомене: на домене приложения его скрипты
+// видели бы данные входа зрителей.
+if (config.playerUrl && config.siteUrl && new URL(config.playerUrl).origin === new URL(config.siteUrl).origin) {
+  console.warn('PLAYER_DOMAIN совпадает с доменом сайта — нужен отдельный поддомен, например player.<домен>. CVH выключен.');
+  config.playerUrl = null;
+}
+if (config.cvhPublisherId && !config.playerUrl) {
+  console.warn('CVH выключен: для его плеера нужен отдельный поддомен — задайте PLAYER_DOMAIN (например, player.<ваш домен>).');
+}
 const players = new Players({
   kodikToken: config.kodikToken,
   kodikApi: config.kodikApi,
@@ -61,7 +70,7 @@ const players = new Players({
   cvhApi: config.cvhApi,
   allohaToken: config.allohaToken,
   allohaApi: config.allohaApi,
-  siteUrl: config.siteUrl,
+  playerUrl: config.playerUrl,
   shikimoriUrl: config.shikimoriUrl,
   userAgent: `${config.appName}/0.1 (+${config.siteUrl ?? 'local'})`,
   store,

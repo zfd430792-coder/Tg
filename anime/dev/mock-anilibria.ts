@@ -334,8 +334,9 @@ function cvhPlaylist(url: URL): Raw | null | 'forbidden' {
 const CVH_SDK = `customElements.define('video-player', class extends HTMLElement {
   connectedCallback() {
     const a = (n) => this.getAttribute(n) || '';
-    let site = 'нет доступа';
-    try { site = Object.keys(localStorage).some((k) => k.startsWith('am:')) ? 'видит данные сайта' : 'данных сайта не видит'; } catch (e) {}
+    // Настоящий SDK тоже мог бы потянуться к странице приложения через parent.
+    let site = 'данных сайта не видит';
+    try { if (Object.keys(parent.localStorage).some((k) => k.startsWith('am:')) || parent.Telegram) site = 'ВИДИТ данные сайта'; } catch (e) {}
     let episode = Number(a('episode')) || 1;
     const info = document.createElement('div');
     info.id = 'info';

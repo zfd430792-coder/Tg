@@ -58,6 +58,8 @@ before(async () => {
       webDist: path.join(root, 'nonexistent'),
       cvhPublisherId: 'pub-cvh',
       cvhSdk: `${origin}/cvh/sdk.js`,
+      siteUrl: 'https://anime.test',
+      playerUrl: 'https://player.anime.test',
     },
     api,
     store,
@@ -154,13 +156,31 @@ describe('плееры', () => {
 });
 
 describe('страница плеера CVH', () => {
-  test('собирается из проверенных параметров, неверные — 400', async () => {
-    const res = await app.inject('/embed/cvh?aggr=mali&id=50000&voice=AniDub%20Online&only=1&episode=2');
+  const player = { host: 'player.anime.test' };
+
+  test('только на поддомене плеера и только из проверенных параметров', async () => {
+    const res = await app.inject({ url: '/embed/cvh?aggr=mali&id=50000&voice=AniDub%20Online&only=1&episode=2', headers: player });
     assert.equal(res.statusCode, 200);
     assert.match(String(res.headers['content-type']), /text\/html/);
     assert.ok(res.body.includes('data-publisher-id="pub-cvh"'));
     assert.ok(res.body.includes('only-voice="AniDub Online"'));
-    assert.equal((await app.inject('/embed/cvh?aggr=x&id=1')).statusCode, 400);
+    assert.ok(res.body.includes('"https://anime.test"'), 'события — только приложению');
+    assert.equal((await app.inject({ url: '/embed/cvh?aggr=x&id=1', headers: player })).statusCode, 400);
+    const twice = await app.inject({ url: '/embed/cvh?aggr=mali&id=1&voice=a&voice=b', headers: player });
+    assert.equal(twice.statusCode, 200, 'повтор параметра не роняет страницу');
+    assert.ok(!twice.body.includes('priority-voice'));
+  });
+
+  test('на домене приложения страницы нет, а на поддомене — ничего, кроме неё', async () => {
+    assert.equal((await app.inject('/embed/cvh?aggr=mali&id=50000')).statusCode, 404);
+    assert.equal((await app.inject({ url: '/api/latest', headers: player })).statusCode, 404);
+    assert.equal((await app.inject({ url: '/', headers: player })).statusCode, 404);
+  });
+
+  test('чужой сайт встроить плеер не может', async () => {
+    const url = '/embed/cvh?aggr=mali&id=50000';
+    assert.equal((await app.inject({ url, headers: { ...player, referer: 'https://evil.example/page' } })).statusCode, 403);
+    assert.equal((await app.inject({ url, headers: { ...player, referer: 'https://anime.test/' } })).statusCode, 200);
   });
 });
 

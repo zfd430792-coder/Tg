@@ -228,20 +228,13 @@ ask_options() {
   fi
   KODIK_TOKEN=$(printf '%s' "$KODIK_TOKEN" | tr -cd 'A-Za-z0-9')
 
-  current=$(env_get CVH_PUBLISHER_ID "$APP/.env")
-  if [[ -z "${CVH_PUBLISHER_ID+x}" ]]; then
+  if [[ -z "${CVH_PUBLISHER_ID+x}${ALLOHA_TOKEN+x}" ]]; then
     printf '  Плееры в 1080p и с множеством озвучек: CVH и Alloha. Видео хранят они сами, для сайта это бесплатно,\n' >&2
     printf '  но ID и токен выдают после регистрации сайта: cdnvideohub.com и alloha.tv. Пока нет — нажмите Enter.\n' >&2
-    CVH_PUBLISHER_ID=$(ask "ID издателя CVH (data-publisher-id)" "$current")
   fi
-  CVH_PUBLISHER_ID=$(printf '%s' "$CVH_PUBLISHER_ID" | tr -cd 'A-Za-z0-9_-')
-
-  current=$(env_get ALLOHA_TOKEN "$APP/.env")
-  if [[ -z "${ALLOHA_TOKEN+x}" ]]; then
-    ALLOHA_TOKEN=$(ask_secret "Токен Alloha${current:+ (Enter — оставить текущий)}")
-    ALLOHA_TOKEN=${ALLOHA_TOKEN:-$current}
-  fi
-  ALLOHA_TOKEN=$(printf '%s' "$ALLOHA_TOKEN" | tr -cd 'A-Za-z0-9_.-')
+  ask_checked CVH_PUBLISHER_ID "ID издателя CVH (data-publisher-id, только цифры)" '^[0-9]{1,12}$' plain
+  ask_checked ALLOHA_TOKEN "Токен Alloha" '^[A-Za-z0-9_.-]{8,128}$' secret
+  ask_player_domain
 
   current=$(env_get HLS_PROXY "$APP/.env")
   if [[ -z "${HLS_PROXY:-}" ]]; then
@@ -253,6 +246,63 @@ ask_options() {
     if confirm "Обновляться автоматически с GitHub (ветка $BRANCH)?" "y"; then AUTO_UPDATE=1; else AUTO_UPDATE=0; fi
   fi
   UPDATE_EVERY=${UPDATE_EVERY:-5}
+}
+
+# Значение, которое можно пропустить (Enter оставляет текущее): переменная из окружения,
+# иначе вопрос. Что-то не по формату (например, «y» вместо ID) переспрашиваем.
+ask_checked() {
+  local var=$1 title=$2 pattern=$3 kind=$4 current value i
+  current=$(env_get "$var" "$APP/.env")
+  if [[ -n "${!var+x}" ]]; then
+    value=${!var}
+    [[ -z "$value" || "$value" =~ $pattern ]] || { warn "$var=«$value» не похоже на настоящее значение — не сохраняю"; value=''; }
+    printf -v "$var" '%s' "$value"
+    return 0
+  fi
+  for ((i = 0; i < 3; i++)); do
+    if [[ $kind == secret ]]; then
+      value=$(ask_secret "$title${current:+ (Enter — оставить текущий)}")
+    else
+      value=$(ask "$title" "$current")
+    fi
+    value=$(printf '%s' "${value:-$current}" | tr -d '[:space:]')
+    if [[ -z "$value" || "$value" =~ $pattern ]]; then
+      printf -v "$var" '%s' "$value"
+      return 0
+    fi
+    warn "Это не похоже на $title. Введите ещё раз или нажмите Enter, чтобы пропустить."
+  done
+  printf -v "$var" '%s' "$current"
+}
+
+# Плеер CVH открывается с отдельного поддомена: на домене приложения его скрипты видели бы
+# данные входа зрителей. Для *.sslip.io поддомен уже указывает на сервер.
+ask_player_domain() {
+  local current ip resolved
+  if [[ -z "$CVH_PUBLISHER_ID" ]]; then
+    PLAYER_DOMAIN=''
+    return 0
+  fi
+  current=$(env_get PLAYER_DOMAIN "$APP/.env")
+  if [[ -z "${PLAYER_DOMAIN:-}" ]]; then
+    printf '  Плеер CVH работает на отдельном поддомене — так его скрипты не видят данные входа ваших зрителей.\n' >&2
+    printf '  Нужна A-запись поддомена на этот сервер, и этот же поддомен укажите при регистрации в CVH.\n' >&2
+    PLAYER_DOMAIN=$(ask "Поддомен для плеера" "${current:-player.$DOMAIN}")
+  fi
+  PLAYER_DOMAIN=$(printf '%s' "$PLAYER_DOMAIN" | tr '[:upper:]' '[:lower:]' | sed -E 's#^https?://##; s#/.*$##')
+  if [[ ! "$PLAYER_DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ || "$PLAYER_DOMAIN" == "$DOMAIN" ]]; then
+    warn "«$PLAYER_DOMAIN» не подходит: нужен отдельный поддомен, например player.$DOMAIN. CVH будет выключен."
+    PLAYER_DOMAIN=''
+    return 0
+  fi
+  ip=$(public_ip || true)
+  resolved=$(getent ahostsv4 "$PLAYER_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)
+  if [[ -n "$ip" && " $resolved " != *" $ip "* ]]; then
+    warn "$PLAYER_DOMAIN сейчас указывает на «${resolved:-никуда}», а IP сервера — $ip."
+    warn "Добавьте A-запись: пока её нет, плеер CVH не откроется (сертификат Caddy выпустит сам, когда DNS заработает)."
+  else
+    ok "поддомен плеера $PLAYER_DOMAIN → $ip"
+  fi
 }
 
 # ---- Код и настройки ----
@@ -289,6 +339,7 @@ BOT_APP_SHORT_NAME=$BOT_APP_SHORT_NAME
 HLS_PROXY=$HLS_PROXY
 KODIK_TOKEN=$KODIK_TOKEN
 CVH_PUBLISHER_ID=$CVH_PUBLISHER_ID
+PLAYER_DOMAIN=$PLAYER_DOMAIN
 ALLOHA_TOKEN=$ALLOHA_TOKEN
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
@@ -347,6 +398,9 @@ start_app() {
   done
   if [[ $PROXY_MODE == external ]]; then
     warn "https://$DOMAIN пока не открывается — направьте его в своём прокси на 127.0.0.1:$APP_PORT (пример ниже)."
+  elif ! (cd "$APP" && docker compose ps --status running --services 2>/dev/null) | grep -qx caddy; then
+    warn "Caddy не запустился — без него нет HTTPS. Последние строки его лога:"
+    (cd "$APP" && docker compose logs --tail 15 caddy 2>&1 | sed 's/^/      /') >&2 || true
   else
     warn "https://$DOMAIN пока не открывается. Обычно это DNS или закрытые порты 80/443 — Caddy допишет сертификат сам, как только домен заработает."
   fi
@@ -516,9 +570,10 @@ proxy_help() {
     nginx:  location / { proxy_pass http://127.0.0.1:$APP_PORT; proxy_set_header Host \$host;
                          proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
                          proxy_set_header X-Forwarded-Proto \$scheme; }
-    Caddy:  $DOMAIN {
+    Caddy:  $DOMAIN${PLAYER_DOMAIN:+ $PLAYER_DOMAIN} {
               reverse_proxy 127.0.0.1:$APP_PORT
-            }
+            }${PLAYER_DOMAIN:+
+    Поддомен плеера CVH $PLAYER_DOMAIN направьте туда же и тоже по HTTPS.}
     Если ваш прокси сам в Docker — 127.0.0.1 там не сработает: проще остановить его
     и запустить установку ещё раз (вариант 1), тогда HTTPS возьмёт на себя AniMini.
 
@@ -532,7 +587,8 @@ summary() {
 $(printf '\033[1;32m')Готово!$(printf '\033[0m')
 
   Сайт и Mini App:  https://$DOMAIN
-  Бот:              ${bot:-(проверьте токен)}${BOT_USERNAME:+  →  https://t.me/$BOT_USERNAME}
+${PLAYER_DOMAIN:+  Плеер CVH:        https://$PLAYER_DOMAIN (этот поддомен укажите и в кабинете CVH)
+}  Бот:              ${bot:-(проверьте токен)}${BOT_USERNAME:+  →  https://t.me/$BOT_USERNAME}
 
   В боте уже стоит кнопка меню «Смотреть» — она открывает Mini App.
   Чтобы приложение открывалось и из профиля бота:

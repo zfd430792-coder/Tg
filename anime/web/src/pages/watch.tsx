@@ -146,11 +146,13 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       setState((s) => {
         if (!s) return s;
         const previous = s.progress.find((p) => p.ordinal === target.ordinal);
+        // Отметка «серия открыта» (duration = 0) не затирает сохранённую позицию.
+        const keep = duration === 0 && previous && previous.duration > 0 ? previous : null;
         const next = {
           episodeId: target.id,
           ordinal: target.ordinal,
-          time,
-          duration,
+          time: keep ? keep.time : time,
+          duration: keep ? keep.duration : duration,
           watched: Boolean(previous?.watched || options.watched || time / duration >= 0.92),
           updatedAt: new Date().toISOString(),
         };
@@ -187,7 +189,9 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       return;
     }
     const current = frameRef.current;
-    if (current && current.key === frameKey && reportedEpisode.current === entry.ordinal) return;
+    // Плеер, которому серию не передать (её выбирают в нём самом), при смене серии у нас
+    // не перезагружаем: открылся бы тот же адрес, и просмотр начался бы заново.
+    if (current && current.key === frameKey && (reportedEpisode.current === entry.ordinal || !params.episode)) return;
     reportedEpisode.current = entry.ordinal;
     const src = frameSrc(frameLink, { params, season: dub?.season ?? player.season, episode: entry.ordinal, hideDubs: Boolean(dub) });
     frameRef.current = { key: frameKey, src, episode: entry.ordinal, nonce: ++frameNonce.current };
@@ -198,9 +202,10 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   useEffect(() => () => window.clearTimeout(nextTimer.current), [frame?.nonce]);
 
   // Alloha не сообщает время просмотра. Чтобы тайтл попал в «Продолжить просмотр»,
-  // запоминаем хотя бы, какую серию открыли (если прогресса по ней ещё нет).
+  // запоминаем хотя бы, какую серию открыли (если прогресса по ней ещё нет). Серия
+  // известна, если плеер открывает её по адресу или это фильм (одна серия).
   useEffect(() => {
-    if (!frame || !player || player.events || !player.frame?.episode || !state) return;
+    if (!frame || !player || player.events || !(player.frame?.episode || player.lastEpisode === 1) || !state) return;
     if (state.progress.some((p) => p.ordinal === frame.episode)) return;
     saveProgress(frame.episode, 0, 0, { watched: false, leaving: false });
     // Только при смене серии или плеера, а не при каждом обновлении прогресса.
@@ -260,6 +265,8 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const hasNext = index < entries.length - 1;
   const subtitle = `${entry.ordinal} серия${entry.episode?.name ? ` · ${entry.episode.name}` : ''}`;
   const others = players.filter((p) => p.id !== 'anilibria');
+  // Серию не передать в плеер (сезон неизвестен) — её выбирают в нём самом. У фильма серий нет.
+  const pickEpisodeInside = player?.kind === 'iframe' && !player.frame?.episode && player.lastEpisode !== 1;
 
   let screen;
   if (!player && playersLoaded) {
@@ -357,11 +364,11 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
               })}
             </div>
           )}
-          {player?.kind === 'iframe' && (player.dubs.length === 0 || !player.frame?.episode) && (
+          {player?.kind === 'iframe' && (player.dubs.length === 0 || pickEpisodeInside) && (
             <p className="hint">
-              {!player.frame?.episode && player.dubs.length === 0
+              {pickEpisodeInside && player.dubs.length === 0
                 ? 'Серию и озвучку выбирают внутри плеера.'
-                : !player.frame?.episode
+                : pickEpisodeInside
                   ? 'Серию выбирают внутри плеера.'
                   : 'Озвучку выбирают внутри плеера.'}
             </p>

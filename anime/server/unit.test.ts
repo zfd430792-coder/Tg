@@ -211,4 +211,18 @@ describe('прогресс просмотра', () => {
     assert.deepEqual(store.progress(1, 11).map((p) => p.episodeId), ['x11-4'], 'другой тайтл не тронут');
     store.close();
   });
+
+  test('отметка «серия открыта» (без времени) не затирает позицию', () => {
+    const store = new Store(':memory:');
+    store.upsertUser({ id: 1, first_name: 'A' });
+    store.saveCard(release(10, 3, 't'));
+    store.saveProgress(1, { releaseId: 10, episodeId: 'a1', ordinal: 1, time: 600, duration: 1400 });
+    store.saveProgress(1, { releaseId: 10, episodeId: 'a1', ordinal: 1, time: 0, duration: 0 });
+    assert.deepEqual(store.progress(1, 10).map((p) => [p.time, p.duration]), [[600, 1400]]);
+    // То же, если запись была под другим ID этой серии.
+    store.saveProgress(1, { releaseId: 10, episodeId: 'x10-2', ordinal: 2, time: 300, duration: 1400 });
+    store.saveProgress(1, { releaseId: 10, episodeId: 'a2', ordinal: 2, time: 0, duration: 0 });
+    assert.deepEqual(store.progress(1, 10).map((p) => [p.episodeId, p.time]), [['a1', 600], ['a2', 300]]);
+    store.close();
+  });
 });
