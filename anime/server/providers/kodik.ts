@@ -7,7 +7,7 @@
 // {"error": "..."}; одна запись на каждый перевод.
 
 import { normalizeLink } from '../../shared/players.ts';
-import type { Dub, PlayerSource, Release } from '../../shared/types.ts';
+import type { Dub, FrameParams, PlayerSource, Release } from '../../shared/types.ts';
 
 type Raw = Record<string, any>;
 
@@ -33,6 +33,21 @@ export interface ExternalIds {
   shikimori: string | null;
   kinopoisk: string | null;
   imdb: string | null;
+  /** Сезон внутри сериала на Кинопоиске/IMDb: там один ID на все сезоны, а у Shikimori — свой на каждый. */
+  kpSeason: number | null;
+}
+
+export const noIds = (): ExternalIds => ({ shikimori: null, kinopoisk: null, imdb: null, kpSeason: null });
+
+/** Самое частое значение поля среди записей (по записи на перевод). */
+function majority(results: KodikResult[], pick: (r: KodikResult) => unknown): string | null {
+  const counts = new Map<string, number>();
+  for (const result of results) {
+    const value = pick(result);
+    if (value === undefined || value === null || value === '') continue;
+    counts.set(String(value), (counts.get(String(value)) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
 export class KodikError extends Error {}
@@ -88,17 +103,29 @@ export class KodikApi {
     return sameYear[0] ?? matches[0] ?? null;
   }
 
-  /** Все переводы тайтла. Группируем по shikimori_id: kinopoisk_id бывает общий у разных сезонов. */
+  /**
+   * Все переводы тайтла. Ищем по shikimori_id — он свой у каждого сезона, а kinopoisk_id
+   * бывает общий на весь сериал. ID берём из AniLiberty, а если его нет — из записи Kodik.
+   */
   async translations(release: Release): Promise<{ results: KodikResult[]; ids: ExternalIds }> {
-    const base = await this.find(release);
-    if (!base) return { results: [], ids: { shikimori: null, kinopoisk: null, imdb: null } };
-    const ids: ExternalIds = {
-      shikimori: base.shikimori_id ? String(base.shikimori_id) : null,
-      kinopoisk: base.kinopoisk_id ? String(base.kinopoisk_id) : null,
-      imdb: base.imdb_id ? String(base.imdb_id) : null,
+    let shikimori = release.shikimoriId ? String(release.shikimoriId) : null;
+    let base: KodikResult | null = null;
+    if (!shikimori) {
+      base = await this.find(release);
+      shikimori = base?.shikimori_id ? String(base.shikimori_id) : null;
+    }
+    let results = shikimori ? await this.search({ shikimori_id: shikimori, limit: '100' }) : [];
+    if (results.length === 0 && base) results = [base];
+    const season = majority(results, (r) => r.last_season);
+    return {
+      results,
+      ids: {
+        shikimori,
+        kinopoisk: majority(results, (r) => r.kinopoisk_id),
+        imdb: majority(results, (r) => r.imdb_id),
+        kpSeason: season ? Number(season) : null,
+      },
     };
-    const results = ids.shikimori ? await this.search({ shikimori_id: ids.shikimori, limit: '100' }) : [base];
-    return { results: results.length ? results : [base], ids };
   }
 }
 
@@ -140,7 +167,19 @@ export function toDubs(results: KodikResult[]): Dub[] {
   );
 }
 
-const KODIK_EPISODES = { season: 'season', episode: 'episode' };
+/** Kodik: ?season=&episode=; translations=false прячет его меню озвучек, hide_selectors — все меню. */
+const KODIK_FRAME: FrameParams = {
+  season: 'season',
+  episode: 'episode',
+  hideDubs: { translations: 'false' },
+  showDubs: ['translations', 'hide_selectors'],
+};
+
+/** Плеер Kodik без токена: ссылка из AniLiberty, иначе поиск плеера по ID Shikimori. */
+export function kodikFallbackLink(release: Release): string | null {
+  if (release.externalPlayer) return release.externalPlayer;
+  return release.shikimoriId ? `https://kodikplayer.com/find-player?shikimoriID=${release.shikimoriId}` : null;
+}
 
 /** Плеер Kodik для тайтла: со списком озвучек (токен) или общий, с выбором внутри. */
 export function kodikPlayer(dubs: Dub[], fallbackLink: string | null): PlayerSource | null {
@@ -151,7 +190,8 @@ export function kodikPlayer(dubs: Dub[], fallbackLink: string | null): PlayerSou
       kind: 'iframe',
       link: null,
       dubs,
-      episodeParams: KODIK_EPISODES,
+      frame: KODIK_FRAME,
+      events: 'kodik',
       lastEpisode: Math.max(...dubs.map((d) => d.lastEpisode ?? 0)) || null,
       season: null,
     };
@@ -164,7 +204,8 @@ export function kodikPlayer(dubs: Dub[], fallbackLink: string | null): PlayerSou
     link: fallbackLink,
     dubs: [],
     // Сезон неизвестен: без токена открываем серию только номером, а дальше выбирают в плеере.
-    episodeParams: { season: null, episode: 'episode' },
+    frame: { ...KODIK_FRAME, season: null },
+    events: 'kodik',
     lastEpisode: null,
     season: null,
   };

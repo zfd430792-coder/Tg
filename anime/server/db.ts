@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS progress (
   UNIQUE (user_id, episode_id)
 );
 CREATE INDEX IF NOT EXISTS progress_user_release ON progress(user_id, release_id, updated_at);
+CREATE TABLE IF NOT EXISTS release_ids (
+  release_id INTEGER PRIMARY KEY,
+  shikimori_id TEXT,
+  kinopoisk_id TEXT,
+  kp_season INTEGER,
+  imdb_id TEXT,
+  checked_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS release_state (
   release_id INTEGER PRIMARY KEY,
   fresh_at TEXT,
@@ -225,6 +233,23 @@ export class Store {
       )
       .all(userId, limit) as Row[];
     return rows.map((row) => ({ ...toProgress(row), release: JSON.parse(row.card) }));
+  }
+
+  /** ID тайтла на Кинопоиске/IMDb/Shikimori, найденные для видеобалансеров. */
+  releaseIds(releaseId: number): { shikimori: string | null; kinopoisk: string | null; kpSeason: number | null; imdb: string | null; checkedAt: string } | null {
+    const row = this.db.prepare('SELECT * FROM release_ids WHERE release_id = ?').get(releaseId) as Row | undefined;
+    if (!row) return null;
+    return { shikimori: row.shikimori_id, kinopoisk: row.kinopoisk_id, kpSeason: row.kp_season, imdb: row.imdb_id, checkedAt: row.checked_at };
+  }
+
+  saveReleaseIds(releaseId: number, ids: { shikimori: string | null; kinopoisk: string | null; kpSeason: number | null; imdb: string | null }): void {
+    this.db
+      .prepare(
+        `INSERT INTO release_ids (release_id, shikimori_id, kinopoisk_id, kp_season, imdb_id, checked_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(release_id) DO UPDATE SET shikimori_id = excluded.shikimori_id, kinopoisk_id = excluded.kinopoisk_id,
+           kp_season = excluded.kp_season, imdb_id = excluded.imdb_id, checked_at = excluded.checked_at`,
+      )
+      .run(releaseId, ids.shikimori, ids.kinopoisk, ids.kpSeason, ids.imdb, now());
   }
 
   releaseState(releaseId: number): { freshAt: string | null; lastOrdinal: number } | null {

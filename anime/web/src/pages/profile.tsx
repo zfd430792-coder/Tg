@@ -37,7 +37,8 @@ function HistoryList({ items }: { items: HistoryItem[] }) {
             <div>
               <b>{item.release.title}</b>
               <span className="hint">
-                {item.ordinal} серия · {item.watched ? 'досмотрена' : `${Math.round((item.time / Math.max(1, item.duration)) * 100)}%`} · {relativeDate(item.updatedAt)}
+                {item.ordinal} серия · {item.watched ? 'досмотрена' : item.duration > 0 ? `${Math.round((item.time / item.duration) * 100)}%` : 'открыта'} ·{' '}
+                {relativeDate(item.updatedAt)}
               </span>
             </div>
           </Link>

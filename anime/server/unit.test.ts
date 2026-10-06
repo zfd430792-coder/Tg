@@ -124,6 +124,8 @@ function release(id: number, episodes: number, freshAt: string): Release {
     blocked: false,
     voices: [],
     externalPlayer: null,
+    shikimoriId: null,
+    rating: null,
     episodes: Array.from({ length: episodes }, (_, i) => episode(i + 1)),
   };
 }

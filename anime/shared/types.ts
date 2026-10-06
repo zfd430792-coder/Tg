@@ -56,6 +56,10 @@ export interface Release extends ReleaseCard {
   voices: string[];
   /** Плеер Kodik, который AniLiberty сам даёт для тайтла (поле external_player). */
   externalPlayer: string | null;
+  /** ID на Shikimori (совпадает с MyAnimeList): по нему ищут видеобалансеры. */
+  shikimoriId: number | null;
+  /** Оценка на Shikimori (0–10) и сколько людей оценило. */
+  rating: { score: number; votes: number | null } | null;
   episodes: Episode[];
 }
 
@@ -86,10 +90,23 @@ export interface PlayerSource {
   link: string | null;
   /** Озвучки, которые можно выбрать снаружи. Пусто — выбор внутри плеера. */
   dubs: Dub[];
-  /** Как открыть серию в iframe: имена параметров запроса. null — серию выбирают в самом плеере. */
-  episodeParams: { season: string | null; episode: string } | null;
+  /** Как управлять плеером через адрес iframe; null — у нашего HLS-плеера. */
+  frame: FrameParams | null;
+  /** Плеер сообщает время и серию через postMessage (как Kodik) — тогда сохраняем прогресс. */
+  events: 'kodik' | null;
   lastEpisode: number | null;
   season: string | null;
+}
+
+/** Параметры адреса встроенного плеера: у каждого балансера свои. */
+export interface FrameParams {
+  /** Имя параметра сезона и серии; null — серию выбирают в самом плеере. */
+  season: string | null;
+  episode: string | null;
+  /** Что добавить, чтобы плеер спрятал свой выбор озвучки (когда выбираем у нас). */
+  hideDubs: Record<string, string> | null;
+  /** Что убрать, чтобы плеер показал свой выбор озвучки. */
+  showDubs: string[];
 }
 
 export interface PlayersResponse {

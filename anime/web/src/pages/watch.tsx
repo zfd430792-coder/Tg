@@ -32,7 +32,7 @@ function buildEntries(release: Release, extraUpTo: number | null): Entry[] {
 
 function ownPlayer(release: Release): PlayerSource | null {
   if (!release.episodes.some((e) => e.sources.length)) return null;
-  return { id: 'anilibria', title: 'AniLibria', kind: 'hls', link: null, dubs: [], episodeParams: null, lastEpisode: null, season: null };
+  return { id: 'anilibria', title: 'AniLibria', kind: 'hls', link: null, dubs: [], frame: null, events: null, lastEpisode: null, season: null };
 }
 
 function dubLabel(dub: Dub): string {
@@ -146,7 +146,8 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const frameKey = `${player?.id}:${dub?.id ?? ''}`;
   const [frame, setFrame] = useState<{ key: string; src: string; episode: number } | null>(null);
   useEffect(() => {
-    if (!frameLink || !player || !entry) {
+    const params = player?.frame;
+    if (!frameLink || !player || !params || !entry) {
       setFrame(null);
       return;
     }
@@ -154,7 +155,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       if (current && current.key === frameKey && reportedEpisode.current === entry.ordinal) return current;
       reportedEpisode.current = entry.ordinal;
       const src = frameSrc(frameLink, {
-        params: player.episodeParams,
+        params,
         season: dub?.season ?? player.season,
         episode: entry.ordinal,
         hideDubs: Boolean(dub),
@@ -162,6 +163,15 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       return { key: frameKey, src, episode: entry.ordinal };
     });
   }, [frameLink, frameKey, player, dub, entry]);
+
+  // Alloha, Collaps и другие не сообщают время просмотра. Чтобы тайтл попал в «Продолжить
+  // просмотр», запоминаем хотя бы, какую серию открыли (если прогресса по ней ещё нет).
+  useEffect(() => {
+    if (!frame || !player || player.events || !player.frame?.episode || !state) return;
+    if (state.progress.some((p) => p.ordinal === frame.episode)) return;
+    saveProgress(frame.episode, 0, 0, { watched: false, leaving: false });
+    // Только при смене серии или плеера, а не при каждом обновлении прогресса.
+  }, [frame?.src, state === null]);
 
   const onFrameEpisode = useCallback(
     (episode: number) => {
@@ -296,7 +306,15 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
               })}
             </div>
           )}
-          {player?.kind === 'iframe' && player.dubs.length === 0 && <p className="hint">Озвучку выбирают внутри плеера.</p>}
+          {player?.kind === 'iframe' && (player.dubs.length === 0 || !player.frame?.episode) && (
+            <p className="hint">
+              {!player.frame?.episode && player.dubs.length === 0
+                ? 'Серию и озвучку выбирают внутри плеера.'
+                : !player.frame?.episode
+                  ? 'Серию выбирают внутри плеера.'
+                  : 'Озвучку выбирают внутри плеера.'}
+            </p>
+          )}
         </div>
       )}
 

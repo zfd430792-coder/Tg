@@ -165,6 +165,9 @@ export class AniLiberty {
       blocked: Boolean(raw.is_blocked_by_geo || raw.is_blocked_by_copyrights),
       voices: [...new Set(voices)],
       externalPlayer: normalizeLink(text(raw.external_player)),
+      // В живом API есть shikimori/mal {id, url, votes, rating}, хотя в документации их пока нет.
+      shikimoriId: int(raw.shikimori?.id) ?? int(raw.mal?.id),
+      rating: int(raw.shikimori?.rating) ? { score: Number(raw.shikimori.rating), votes: int(raw.shikimori?.votes) } : null,
       episodes: list(raw.episodes)
         .map((e) => this.episode(e))
         .sort((a, b) => a.ordinal - b.ordinal),

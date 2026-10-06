@@ -1,5 +1,7 @@
 // Ссылки на встроенные плееры балансеров: нормализация и открытие нужной серии.
 
+import type { FrameParams } from './types.ts';
+
 /** Ссылки приходят как //host/..., http://... или https://... — приводим к https. */
 export function normalizeLink(link: string | null | undefined): string | null {
   if (!link || typeof link !== 'string') return null;
@@ -19,26 +21,26 @@ export function normalizeLink(link: string | null | undefined): string | null {
 }
 
 export interface FrameOptions {
-  params: { season: string | null; episode: string } | null;
+  params: FrameParams;
   season: string | null;
   episode: number | null;
   /** Убрать свой выбор озвучки у плеера (когда выбираем снаружи). */
   hideDubs?: boolean;
 }
 
-/** Адрес iframe для серии. Kodik открывает серию параметрами ?season=&episode=. */
+/** Адрес iframe для серии: параметры сезона/серии и показ или скрытие меню озвучек плеера. */
 export function frameSrc(link: string, options: FrameOptions): string {
   const url = new URL(link);
-  if (options.hideDubs) {
-    url.searchParams.set('translations', 'false');
+  const { params } = options;
+  if (options.hideDubs && params.hideDubs) {
+    for (const [key, value] of Object.entries(params.hideDubs)) url.searchParams.set(key, value);
   } else {
-    // AniLiberty отдаёт ссылку Kodik с translations=false — тогда меню озвучек пропадает.
-    url.searchParams.delete('translations');
-    url.searchParams.delete('hide_selectors');
+    // Например, AniLiberty отдаёт ссылку Kodik с translations=false — тогда меню озвучек пропадает.
+    for (const key of params.showDubs) url.searchParams.delete(key);
   }
-  if (options.params && options.episode !== null) {
-    if (options.params.season && options.season) url.searchParams.set(options.params.season, options.season);
-    url.searchParams.set(options.params.episode, String(options.episode));
+  if (params.episode && options.episode !== null) {
+    if (params.season && options.season) url.searchParams.set(params.season, options.season);
+    url.searchParams.set(params.episode, String(options.episode));
   }
   return url.toString();
 }
