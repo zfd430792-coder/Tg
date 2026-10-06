@@ -35,6 +35,10 @@ export const config = {
   hlsProxy: flag('HLS_PROXY'),
   hlsHosts: (str('HLS_HOSTS') ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
 
+  /** Токен Kodik (выдают по запросу на support@kodik.biz): список озвучек других студий. */
+  kodikToken: str('KODIK_TOKEN'),
+  kodikApi: str('KODIK_API', 'https://kodikapi.com')!.replace(/\/+$/, ''),
+
   notifyInterval: num('NOTIFY_INTERVAL_MIN', 10) * 60_000,
 
   dbPath: path.resolve(root, str('DB_PATH', 'data/animini.db')!),

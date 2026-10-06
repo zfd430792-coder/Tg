@@ -57,6 +57,24 @@ export interface Release extends ReleaseCard {
   episodes: Episode[];
 }
 
+/**
+ * Озвучка (или субтитры) тайтла. AniLibria играет наш HLS-плеер, остальные —
+ * встроенный плеер Kodik по ссылке из его API.
+ */
+export interface Dub {
+  /** 'anilibria', 'kodik:<id перевода>' или 'kodik' — общий плеер Kodik с выбором внутри. */
+  id: string;
+  title: string;
+  kind: 'hls' | 'iframe';
+  type: 'voice' | 'subtitles' | null;
+  /** Ссылка на плеер Kodik для этого перевода (только для iframe). */
+  link: string | null;
+  /** Последняя вышедшая серия в этой озвучке, если известна. */
+  lastEpisode: number | null;
+  /** Номер сезона у Kodik, если у тайтла их несколько. */
+  season: number | null;
+}
+
 export interface ScheduleItem {
   release: ReleaseCard;
   lastEpisode: number | null;

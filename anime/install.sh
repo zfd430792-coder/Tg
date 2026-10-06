@@ -218,6 +218,16 @@ ask_options() {
   fi
   BOT_APP_SHORT_NAME=$(printf '%s' "$BOT_APP_SHORT_NAME" | tr -cd 'A-Za-z0-9_')
 
+  current=$(env_get KODIK_TOKEN "$APP/.env")
+  if [[ -z "${KODIK_TOKEN+x}" ]]; then
+    printf '  Другие озвучки (AniDub, Studio Band, Dream Cast…) берутся из Kodik. С токеном Kodik у каждой\n' >&2
+    printf '  озвучки будет своя кнопка; без него — общий плеер Kodik со своим выбором внутри.\n' >&2
+    printf '  Токен выдают по запросу на support@kodik.biz. Enter — пропустить%s.\n' "${current:+ (оставить текущий)}" >&2
+    KODIK_TOKEN=$(ask_secret "Токен Kodik")
+    KODIK_TOKEN=${KODIK_TOKEN:-$current}
+  fi
+  KODIK_TOKEN=$(printf '%s' "$KODIK_TOKEN" | tr -cd 'A-Za-z0-9')
+
   current=$(env_get HLS_PROXY "$APP/.env")
   if [[ -z "${HLS_PROXY:-}" ]]; then
     printf '  Прокси видео гонит весь видеотрафик через ваш сервер. Нужен, только если у зрителей не грузится видео.\n' >&2
@@ -260,6 +270,7 @@ SITE_URL=https://$DOMAIN
 BOT_TOKEN=$BOT_TOKEN
 BOT_APP_SHORT_NAME=$BOT_APP_SHORT_NAME
 HLS_PROXY=$HLS_PROXY
+KODIK_TOKEN=$KODIK_TOKEN
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
   if [[ $PROXY_MODE == external ]]; then
