@@ -24,30 +24,7 @@ export interface KodikResult {
   last_episode?: number;
   episodes_count?: number;
   shikimori_id?: string;
-  kinopoisk_id?: string;
-  imdb_id?: string;
   seasons?: Record<string, unknown>;
-}
-
-export interface ExternalIds {
-  shikimori: string | null;
-  kinopoisk: string | null;
-  imdb: string | null;
-  /** Сезон внутри сериала на Кинопоиске/IMDb: там один ID на все сезоны, а у Shikimori — свой на каждый. */
-  kpSeason: number | null;
-}
-
-export const noIds = (): ExternalIds => ({ shikimori: null, kinopoisk: null, imdb: null, kpSeason: null });
-
-/** Самое частое значение поля среди записей (по записи на перевод). */
-function majority(results: KodikResult[], pick: (r: KodikResult) => unknown): string | null {
-  const counts = new Map<string, number>();
-  for (const result of results) {
-    const value = pick(result);
-    if (value === undefined || value === null || value === '') continue;
-    counts.set(String(value), (counts.get(String(value)) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
 export class KodikError extends Error {}
@@ -99,33 +76,24 @@ export class KodikApi {
       const names = [r.title, r.title_orig, ...(r.other_title ?? '').split('/')].map(normalizeTitle);
       return names.some((n) => wanted.includes(n));
     });
+    // Год известен, а совпадения в пределах года нет — скорее всего, это другой тайтл (ремейк).
     const sameYear = matches.filter((r) => !release.year || !r.year || Math.abs(r.year - release.year) <= 1);
-    return sameYear[0] ?? matches[0] ?? null;
+    return sameYear[0] ?? null;
   }
 
   /**
    * Все переводы тайтла. Ищем по shikimori_id — он свой у каждого сезона, а kinopoisk_id
    * бывает общий на весь сериал. ID берём из AniLiberty, а если его нет — из записи Kodik.
    */
-  async translations(release: Release): Promise<{ results: KodikResult[]; ids: ExternalIds }> {
+  async translations(release: Release): Promise<KodikResult[]> {
     let shikimori = release.shikimoriId ? String(release.shikimoriId) : null;
     let base: KodikResult | null = null;
     if (!shikimori) {
       base = await this.find(release);
       shikimori = base?.shikimori_id ? String(base.shikimori_id) : null;
     }
-    let results = shikimori ? await this.search({ shikimori_id: shikimori, limit: '100' }) : [];
-    if (results.length === 0 && base) results = [base];
-    const season = majority(results, (r) => r.last_season);
-    return {
-      results,
-      ids: {
-        shikimori,
-        kinopoisk: majority(results, (r) => r.kinopoisk_id),
-        imdb: majority(results, (r) => r.imdb_id),
-        kpSeason: season ? Number(season) : null,
-      },
-    };
+    const results = shikimori ? await this.search({ shikimori_id: shikimori, limit: '100' }) : [];
+    return results.length === 0 && base ? [base] : results;
   }
 }
 
@@ -175,9 +143,22 @@ const KODIK_FRAME: FrameParams = {
   showDubs: ['translations', 'hide_selectors'],
 };
 
+/** Домены плеера Kodik: чужую ссылку из external_player во iframe не вставляем. */
+const KODIK_HOSTS = /(^|\.)(kodik\.(info|cc|biz|online)|kodikplayer\.com|kodikdb\.com|kodik-storage\.com)$/;
+
+export function isKodikLink(link: string): boolean {
+  try {
+    const { hostname } = new URL(link);
+    // localhost — мок для разработки (dev/mock-anilibria.ts).
+    return KODIK_HOSTS.test(hostname) || hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
 /** Плеер Kodik без токена: ссылка из AniLiberty, иначе поиск плеера по ID Shikimori. */
 export function kodikFallbackLink(release: Release): string | null {
-  if (release.externalPlayer) return release.externalPlayer;
+  if (release.externalPlayer && isKodikLink(release.externalPlayer)) return release.externalPlayer;
   return release.shikimoriId ? `https://kodikplayer.com/find-player?shikimoriID=${release.shikimoriId}` : null;
 }
 

@@ -44,10 +44,7 @@ doctor() {
   echo "AniMini $(git -C "$DIR" rev-parse --short HEAD) · $site · $([[ $mode == caddy ]] && echo 'свой Caddy' || echo "за вашим прокси, 127.0.0.1:${port:-8787}")"
 
   local players=AniLibria
-  players+=", Kodik$(grep -q '^KODIK_TOKEN=.' "$APP/.env" && echo ' (с выбором озвучки)' || echo ' (общий плеер)')"
-  grep -q '^ALLOHA_TOKEN=.' "$APP/.env" && players+=", Alloha"
-  grep -q '^COLLAPS_TOKEN=.' "$APP/.env" && players+=", Collaps"
-  grep -qE '^(LUMEX_TOKEN|LUMEX_CLIENT_ID)=.' "$APP/.env" && players+=", Lumex"
+  players+=", Kodik$(grep -q '^KODIK_TOKEN=.' "$APP/.env" && echo ' (с выбором озвучки)' || echo ' (общий плеер, озвучка в его меню)')"
   echo "Плееры: $players"
 
   echo "Контейнеры"

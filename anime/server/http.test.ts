@@ -173,6 +173,8 @@ describe('данные пользователя', () => {
 
     const bad = await app.inject({ method: 'POST', url: '/api/me/progress', headers, payload: { releaseId: 9000, episodeId: 'x', ordinal: 1, time: -5, duration: 60 } });
     assert.equal(bad.statusCode, 400);
+    const huge = await app.inject({ method: 'POST', url: '/api/me/progress', headers, payload: { releaseId: 9000, episodeId: 'x', ordinal: 1e9, time: 5, duration: 60 } });
+    assert.equal(huge.statusCode, 400, 'номер серии ограничен');
   });
 
   test('sendBeacon: initData в теле запроса', async () => {

@@ -228,8 +228,6 @@ ask_options() {
   fi
   KODIK_TOKEN=$(printf '%s' "$KODIK_TOKEN" | tr -cd 'A-Za-z0-9')
 
-  ask_balancers
-
   current=$(env_get HLS_PROXY "$APP/.env")
   if [[ -z "${HLS_PROXY:-}" ]]; then
     printf '  Прокси видео гонит весь видеотрафик через ваш сервер. Нужен, только если у зрителей не грузится видео.\n' >&2
@@ -240,43 +238,6 @@ ask_options() {
     if confirm "Обновляться автоматически с GitHub (ветка $BRANCH)?" "y"; then AUTO_UPDATE=1; else AUTO_UPDATE=0; fi
   fi
   UPDATE_EVERY=${UPDATE_EVERY:-5}
-}
-
-# Токен одного балансера: переменная из окружения, иначе вопрос; Enter оставляет текущий.
-ask_balancer_token() {
-  local var=$1 title=$2 current value
-  current=$(env_get "$var" "$APP/.env")
-  if [[ -n "${!var+x}" ]]; then
-    value=${!var}
-  else
-    value=$(ask_secret "$title${current:+ (Enter — оставить текущий)}")
-    value=${value:-$current}
-  fi
-  printf -v "$var" '%s' "$(printf '%s' "$value" | tr -cd 'A-Za-z0-9_.-')"
-}
-
-# Плееры Alloha, Collaps, Lumex: у каждого свой токен партнёра, без него плеера просто нет.
-ask_balancers() {
-  local have=''
-  for var in ALLOHA_TOKEN COLLAPS_TOKEN LUMEX_TOKEN LUMEX_CLIENT_ID; do
-    [[ -n "$(env_get "$var" "$APP/.env")" || -n "${!var:-}" ]] && have=y
-  done
-  if [[ -z "${ALLOHA_TOKEN+x}${COLLAPS_TOKEN+x}${LUMEX_TOKEN+x}" ]]; then
-    printf '  Ещё плееры, как на аниме-сайтах: Alloha, Collaps, Lumex. Каждый включается токеном партнёра,\n' >&2
-    printf '  который выдаёт сам балансер. Нет токенов — пропустите, будут AniLibria и Kodik.\n' >&2
-    if ! confirm "Ввести токены других плееров?" "${have:-n}"; then
-      for var in ALLOHA_TOKEN COLLAPS_TOKEN LUMEX_TOKEN LUMEX_CLIENT_ID; do printf -v "$var" '%s' "$(env_get "$var" "$APP/.env")"; done
-      return
-    fi
-  fi
-  ask_balancer_token ALLOHA_TOKEN "Токен Alloha"
-  ask_balancer_token COLLAPS_TOKEN "Токен Collaps"
-  ask_balancer_token LUMEX_TOKEN "Токен API Lumex"
-  if [[ -z "$LUMEX_TOKEN" ]]; then
-    ask_balancer_token LUMEX_CLIENT_ID "Публичный ID сайта в Lumex (из ссылки p.lumex.space/<ID>)"
-  else
-    LUMEX_CLIENT_ID=${LUMEX_CLIENT_ID:-$(env_get LUMEX_CLIENT_ID "$APP/.env")}
-  fi
 }
 
 # ---- Код и настройки ----
@@ -300,6 +261,8 @@ write_config() {
   say "Сохраняю настройки"
   local old_interval
   old_interval=$(env_get NOTIFY_INTERVAL_MIN "$APP/.env")
+  local old_env=''
+  [[ -f "$APP/.env" ]] && old_env=$(cat "$APP/.env")
   umask 077
   cat >"$APP/.env" <<EOF
 # Создано install.sh $(date '+%Y-%m-%d %H:%M'). Поменять: sudo animini config
@@ -310,12 +273,19 @@ BOT_TOKEN=$BOT_TOKEN
 BOT_APP_SHORT_NAME=$BOT_APP_SHORT_NAME
 HLS_PROXY=$HLS_PROXY
 KODIK_TOKEN=$KODIK_TOKEN
-ALLOHA_TOKEN=$ALLOHA_TOKEN
-COLLAPS_TOKEN=$COLLAPS_TOKEN
-LUMEX_TOKEN=$LUMEX_TOKEN
-LUMEX_CLIENT_ID=$LUMEX_CLIENT_ID
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
+  # Настройки, которые установщик не спрашивает (HLS_HOSTS, LOG_LEVEL и т.п.), переносим как есть.
+  # Токены других балансеров (их больше нет) не переносим.
+  if [[ -n "$old_env" ]]; then
+    local line key
+    while IFS= read -r line; do
+      [[ $line =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
+      key=${BASH_REMATCH[1]}
+      [[ $key =~ ^(COMPOSE_FILE|APP_PORT|SHIKIMORI_URL)$|^(ALLOHA|COLLAPS|LUMEX|TURBO|VEOVEO|VIBIX|CVH)_ ]] && continue
+      grep -q "^${key}=" "$APP/.env" || printf '%s\n' "$line" >>"$APP/.env"
+    done <<<"$old_env"
+  fi
   if [[ $PROXY_MODE == external ]]; then
     cat >>"$APP/.env" <<EOF
 # Свой Caddy выключен: домен на 127.0.0.1:$APP_PORT направляет ваш прокси

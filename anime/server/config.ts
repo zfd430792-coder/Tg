@@ -39,18 +39,6 @@ export const config = {
   kodikToken: str('KODIK_TOKEN'),
   kodikApi: str('KODIK_API', 'https://kodik-api.com')!.replace(/\/+$/, ''),
 
-  // Другие видеобалансеры: ищут тайтл по ID Кинопоиска. Включаются токеном.
-  allohaToken: str('ALLOHA_TOKEN'),
-  allohaApi: str('ALLOHA_API', 'https://apbugall.org/v2')!.replace(/\/+$/, ''),
-  collapsToken: str('COLLAPS_TOKEN'),
-  collapsApi: str('COLLAPS_API', 'https://api.bhcesh.me')!.replace(/\/+$/, ''),
-  lumexToken: str('LUMEX_TOKEN'),
-  lumexApi: str('LUMEX_API', 'https://portal.lumex.host/api')!.replace(/\/+$/, ''),
-  /** Публичный ID сайта в Lumex: плеер по ссылке p.lumex.space/<ID>?kp_id=… без токена API. */
-  lumexClientId: str('LUMEX_CLIENT_ID'),
-  /** Где искать ID Кинопоиска по ID Shikimori. Пустое значение — не искать (в России Shikimori заблокирован). */
-  shikimoriUrl: process.env.SHIKIMORI_URL === '' ? null : str('SHIKIMORI_URL', 'https://shikimori.io')!.replace(/\/+$/, ''),
-
   notifyInterval: num('NOTIFY_INTERVAL_MIN', 10) * 60_000,
 
   dbPath: path.resolve(root, str('DB_PATH', 'data/animini.db')!),

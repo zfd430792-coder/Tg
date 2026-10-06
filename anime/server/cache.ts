@@ -50,6 +50,12 @@ export class TtlCache {
     return entry.promise;
   }
 
+  /** Сократить срок жизни записи: например, если ответ собран не полностью. */
+  shorten(key: string, ttlMs: number): void {
+    const entry = this.entries.get(key);
+    if (entry) entry.expires = Math.min(entry.expires, Date.now() + ttlMs);
+  }
+
   delete(key: string): void {
     this.entries.delete(key);
   }

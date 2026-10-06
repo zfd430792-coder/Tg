@@ -9,6 +9,8 @@ export interface FramePlayerProps {
   title: string;
   /** Какая серия открыта по src. Дальше плеер сам сообщает, если её сменили внутри. */
   episode: number;
+  /** Номера серий больше этого из сообщений плеера не принимаем. */
+  maxEpisode: number;
   /** Прогресс приходит с номером серии: к моменту сохранения страница может уже показывать другую. */
   onProgress: (episode: number, time: number, duration: number, options: { watched: boolean; leaving: boolean }) => void;
   /** Плеер сам переключил серию (через свой список серий или автопереход). */
@@ -63,7 +65,7 @@ export default function FramePlayer(props: FramePlayerProps) {
           break;
         case 'kodik_player_current_episode': {
           const episode = Number(value?.episode);
-          if (Number.isFinite(episode) && episode > 0 && episode !== state.current.episode) {
+          if (Number.isInteger(episode) && episode > 0 && episode <= latest.current.maxEpisode && episode !== state.current.episode) {
             // Серию сменили внутри плеера: прошлую досохраняем, счётчики начинаем заново.
             report(false);
             state.current = { episode, time: 0, duration: 0, reported: 0, ended: false };

@@ -6,7 +6,7 @@ import { useFetch } from '../api.ts';
 import FramePlayer from '../components/frame-player.tsx';
 import { Icon } from '../components/icons.tsx';
 import { BackLink, ErrorState, Spinner } from '../components/ui.tsx';
-import { type Choice, resolveChoice, saveChoice, savedChoice } from '../players.ts';
+import { type Choice, lastChoice, resolveChoice, saveChoice, savedChoice } from '../players.ts';
 import { Link, navigate } from '../router.ts';
 import { haptic, tg } from '../telegram.ts';
 import { getSettings, userData } from '../user.ts';
@@ -21,12 +21,21 @@ interface Entry {
   episode: Episode | null;
 }
 
-/** Серии AniLibria плюс те, что уже вышли в выбранной озвучке другого плеера. */
-function buildEntries(release: Release, extraUpTo: number | null): Entry[] {
+/** Больше серий не бывает: защищает от ссылок вида startapp=w_1_999999999. */
+const MAX_EPISODE = 3000;
+
+/** Номер серии из адреса: от 0 до MAX_EPISODE (бывают и спецвыпуски вроде 12.5), иначе null. */
+function validOrdinal(value: number): number | null {
+  return Number.isFinite(value) && value >= 0 && value <= MAX_EPISODE ? value : null;
+}
+
+/** Серии AniLibria плюс серии 1…extraUpTo, которые пока есть только в Kodik. */
+function buildEntries(release: Release, extraUpTo: number | null, extra: number | null = null): Entry[] {
   const byOrdinal = new Map<number, Entry>(release.episodes.map((e) => [e.ordinal, { ordinal: e.ordinal, id: e.id, episode: e }]));
-  for (let n = 1; extraUpTo && n <= extraUpTo; n++) {
-    if (!byOrdinal.has(n)) byOrdinal.set(n, { ordinal: n, id: `n${n}`, episode: null });
-  }
+  // ID таких серий должен быть уникален и среди всех тайтлов: по нему сервер хранит прогресс.
+  const add = (n: number) => !byOrdinal.has(n) && byOrdinal.set(n, { ordinal: n, id: `x${release.id}-${n}`, episode: null });
+  for (let n = 1; extraUpTo && n <= Math.min(extraUpTo, MAX_EPISODE); n++) add(n);
+  if (extra) add(extra);
   return [...byOrdinal.values()].sort((a, b) => a.ordinal - b.ordinal);
 }
 
@@ -49,6 +58,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const store = userData();
   const chips = useRef<HTMLDivElement>(null);
   const reportedEpisode = useRef<number | null>(null);
+  const nextTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (!release) return;
@@ -58,31 +68,38 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       .catch(() => setState({ favorite: false, subscribed: false, progress: [] }));
   }, [release, store]);
 
-  // Пока список плееров грузится, сразу показываем свой плеер — если пользователь не выбирал другой.
+  // Пока список плееров грузится, сразу показываем свой плеер — если пользователь не
+  // предпочитает другой (для этого тайтла или вообще в последний раз).
   const saved = useMemo(() => (release ? savedChoice(release.id) : null), [release]);
   const own = useMemo(() => (release ? ownPlayer(release) : null), [release]);
-  const waitingForPlayers = !playersQuery.data && !playersQuery.error && Boolean(saved && saved.player !== 'anilibria');
+  const preferred = (picked ?? saved)?.player ?? lastChoice()?.player ?? 'anilibria';
+  const playersLoaded = Boolean(playersQuery.data || playersQuery.error);
+  const waitingForPlayers = !playersLoaded && preferred !== 'anilibria';
   const players = playersQuery.data?.players ?? (own && !waitingForPlayers ? [own] : []);
   const selection = resolveChoice(players, picked ?? saved);
   const player = selection?.player ?? null;
   const dub = selection?.dub ?? null;
 
-  const wanted = Number(ordinal);
-  // Список серий общий для всех плееров: серии AniLibria и всё, что вышло в других
-  // плеерах. Во встроенном плеере добавляем и открытую сейчас серию — её могли выбрать
-  // в самом плеере, даже если мы не знаем, сколько серий вышло.
+  const wanted = validOrdinal(Number(ordinal));
+  // Список серий общий для обоих плееров: серии AniLibria и всё, что уже вышло в Kodik.
   const otherUpTo = Math.max(
     0,
     ...players.filter((p) => p.kind === 'iframe').map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))),
   );
-  const extraUpTo =
-    player?.kind === 'iframe' ? Math.max(otherUpTo, Number.isInteger(wanted) && wanted > 0 ? wanted : 0, 1) : otherUpTo || null;
-  const entries = useMemo(() => (release ? buildEntries(release, extraUpTo) : []), [release, extraUpTo]);
+  const knownUpTo = Math.max(otherUpTo, ...(release?.episodes.map((e) => e.ordinal) ?? [0]));
+  const extraUpTo = player?.kind === 'iframe' ? Math.max(otherUpTo, 1) : otherUpTo || null;
+  // Открытую серию держим в списке, даже если не знаем, вышла ли она: во встроенном плеере
+  // её могли выбрать в нём самом, а у AniLibria покажем «этой серии ещё нет».
+  const extra = wanted !== null && Number.isInteger(wanted) && wanted > 0 && (player?.kind === 'iframe' || wanted <= knownUpTo) ? wanted : null;
+  const entries = useMemo(() => (release ? buildEntries(release, extraUpTo, extra) : []), [release, extraUpTo, extra]);
   /** Есть ли серия в выбранном плеере и озвучке. */
-  const available = (e: Entry) =>
-    player?.kind === 'hls' ? Boolean(e.episode?.sources.length) : !(dub?.lastEpisode && e.ordinal > dub.lastEpisode);
-  const index = Math.max(0, entries.findIndex((e) => e.ordinal === wanted));
-  const entry = entries[index] as Entry | undefined;
+  const limit = dub?.lastEpisode ?? player?.lastEpisode ?? null;
+  const available = useCallback(
+    (e: Entry) => (player?.kind === 'hls' ? Boolean(e.episode?.sources.length) : !(limit && e.ordinal > limit)),
+    [player, limit],
+  );
+  const index = entries.findIndex((e) => e.ordinal === wanted);
+  const entry = index >= 0 ? entries[index] : undefined;
 
   useEffect(() => {
     if (release && entry) document.title = `${entry.ordinal} серия — ${release.title} — ${config.appName}`;
@@ -132,46 +149,42 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
     [release, store],
   );
 
-  const choose = (next: PlayerSource, nextDub: Dub | null) => {
+  /** Выбор плеера; озвучку, если не указана, берём сохранённую для этого плеера или любимую. */
+  const choose = (next: PlayerSource, nextDub?: Dub | null) => {
     if (!release) return;
     haptic('select');
-    const choice = { player: next.id, dub: nextDub?.id ?? null };
+    const resolvedDub = nextDub === undefined ? (resolveChoice([next], picked ?? saved)?.dub ?? null) : nextDub;
+    const choice = { player: next.id, dub: resolvedDub?.id ?? null };
     setPicked(choice);
-    saveChoice(release.id, choice, nextDub?.title ?? null);
+    saveChoice(release.id, choice, resolvedDub?.title ?? null);
   };
 
   // Адрес iframe меняем, только когда серию выбрали у нас. Если её сменил сам плеер,
   // он уже её показывает — перезагрузка сбросила бы просмотр.
   const frameLink = player?.kind === 'iframe' ? (dub?.link ?? player.link) : null;
   const frameKey = `${player?.id}:${dub?.id ?? ''}`;
-  const [frame, setFrame] = useState<{ key: string; src: string; episode: number } | null>(null);
+  // nonce меняется при каждой пересборке: так iframe перезагрузится, даже если адрес тот же
+  // (вернулись к исходной серии после того, как серию сменили внутри плеера).
+  const [frame, setFrame] = useState<{ key: string; src: string; episode: number; nonce: number } | null>(null);
+  const frameRef = useRef(frame);
+  const frameNonce = useRef(0);
   useEffect(() => {
     const params = player?.frame;
     if (!frameLink || !player || !params || !entry) {
+      frameRef.current = null;
       setFrame(null);
       return;
     }
-    setFrame((current) => {
-      if (current && current.key === frameKey && reportedEpisode.current === entry.ordinal) return current;
-      reportedEpisode.current = entry.ordinal;
-      const src = frameSrc(frameLink, {
-        params,
-        season: dub?.season ?? player.season,
-        episode: entry.ordinal,
-        hideDubs: Boolean(dub),
-      });
-      return { key: frameKey, src, episode: entry.ordinal };
-    });
+    const current = frameRef.current;
+    if (current && current.key === frameKey && reportedEpisode.current === entry.ordinal) return;
+    reportedEpisode.current = entry.ordinal;
+    const src = frameSrc(frameLink, { params, season: dub?.season ?? player.season, episode: entry.ordinal, hideDubs: Boolean(dub) });
+    frameRef.current = { key: frameKey, src, episode: entry.ordinal, nonce: ++frameNonce.current };
+    setFrame(frameRef.current);
   }, [frameLink, frameKey, player, dub, entry]);
 
-  // Alloha, Collaps и другие не сообщают время просмотра. Чтобы тайтл попал в «Продолжить
-  // просмотр», запоминаем хотя бы, какую серию открыли (если прогресса по ней ещё нет).
-  useEffect(() => {
-    if (!frame || !player || player.events || !player.frame?.episode || !state) return;
-    if (state.progress.some((p) => p.ordinal === frame.episode)) return;
-    saveProgress(frame.episode, 0, 0, { watched: false, leaving: false });
-    // Только при смене серии или плеера, а не при каждом обновлении прогресса.
-  }, [frame?.src, state === null]);
+  // Отложенный автопереход не должен сработать после ухода со страницы или смены серии.
+  useEffect(() => () => window.clearTimeout(nextTimer.current), [frame?.nonce]);
 
   const onFrameEpisode = useCallback(
     (episode: number) => {
@@ -181,16 +194,18 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
     [wanted, goTo],
   );
 
-  // Kodik сам может включить следующую серию. Если через пару секунд он этого не сделал — переключаем мы.
+  // Kodik сам может включить следующую серию. Если через пару секунд он этого не сделал — переключаем мы
+  // (только на серию, которая есть в этом плеере и озвучке, и без спецвыпусков вроде 12.5).
   const onFrameEnded = useCallback(() => {
     if (!getSettings().autoNext) return;
     const endedOn = reportedEpisode.current;
-    const next = entries.find((e) => endedOn !== null && e.ordinal > endedOn);
+    const next = entries.find((e) => endedOn !== null && e.ordinal > endedOn && Number.isInteger(e.ordinal) && available(e));
     if (!next) return;
-    window.setTimeout(() => {
+    window.clearTimeout(nextTimer.current);
+    nextTimer.current = window.setTimeout(() => {
       if (reportedEpisode.current === endedOn) goTo(next.ordinal);
     }, 2500);
-  }, [entries, goTo]);
+  }, [entries, goTo, available]);
 
   if (loading) return <Spinner />;
   if (error) {
@@ -203,11 +218,17 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   }
   if (!release) return null;
   if (!entry) {
-    if (playersQuery.loading || waitingForPlayers) return <Spinner label="Ищу плееры…" />;
+    if (!playersLoaded) return <Spinner label="Ищу плееры…" />;
+    const first = entries[0];
     return (
       <div className="page">
         <BackLink />
-        <ErrorState error={new Error('У этого тайтла пока нет серий ни в одном плеере')} />
+        <ErrorState error={new Error(first ? 'Такой серии нет' : 'У этого тайтла пока нет серий ни в одном плеере')} />
+        {first && (
+          <Link to={watchPath(release.alias || release.id, first.ordinal)} replace className="btn wide">
+            К {first.ordinal} серии
+          </Link>
+        )}
       </div>
     );
   }
@@ -221,7 +242,13 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const others = players.filter((p) => p.id !== 'anilibria');
 
   let screen;
-  if (state === null || !player) {
+  if (!player && playersLoaded) {
+    screen = (
+      <div className="player placeholder notice-screen">
+        <p>{release.blocked ? 'Правообладатель ограничил показ этого тайтла.' : 'Видео пока нет ни в одном плеере.'}</p>
+      </div>
+    );
+  } else if (state === null || !player) {
     screen = <div className="player placeholder" />;
   } else if (player.kind === 'hls' && entry.episode) {
     screen = (
@@ -246,7 +273,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       <div className="player placeholder notice-screen">
         <p>В озвучке AniLibria {entry.ordinal}-й серии ещё нет.</p>
         {others[0] && (
-          <button className="btn" onClick={() => choose(others[0], others[0].dubs[0] ?? null)}>
+          <button className="btn" onClick={() => choose(others[0])}>
             Смотреть в {others[0].title}
           </button>
         )}
@@ -255,6 +282,8 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   } else if (frame) {
     screen = (
       <FramePlayer
+        key={frame.nonce}
+        maxEpisode={MAX_EPISODE}
         src={frame.src}
         episode={frame.episode}
         title={`${release.title} — ${subtitle}`}
@@ -280,7 +309,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
                 role="tab"
                 aria-selected={p.id === player?.id}
                 className={`chip ${p.id === player?.id ? 'active' : ''}`}
-                onClick={() => p.id !== player?.id && choose(p, null)}
+                onClick={() => p.id !== player?.id && choose(p)}
               >
                 {p.title}
                 {p.dubs.length > 1 && <span className="chip-count">{p.dubs.length}</span>}
@@ -306,15 +335,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
               })}
             </div>
           )}
-          {player?.kind === 'iframe' && (player.dubs.length === 0 || !player.frame?.episode) && (
-            <p className="hint">
-              {!player.frame?.episode && player.dubs.length === 0
-                ? 'Серию и озвучку выбирают внутри плеера.'
-                : !player.frame?.episode
-                  ? 'Серию выбирают внутри плеера.'
-                  : 'Озвучку выбирают внутри плеера.'}
-            </p>
-          )}
+          {player?.kind === 'iframe' && player.dubs.length === 0 && <p className="hint">Озвучку выбирают внутри плеера.</p>}
         </div>
       )}
 

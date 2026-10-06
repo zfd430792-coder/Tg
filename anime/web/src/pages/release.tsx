@@ -19,15 +19,25 @@ export function shareUrl(config: AppConfig, release: Release): string {
   return `${config.siteUrl ?? location.origin}/release/${release.alias}`;
 }
 
-/** С какой серии продолжить: первая недосмотренная после последней открытой. */
-export function resumeEpisode(release: Release, progress: EpisodeProgress[]): { ordinal: number; label: string } | null {
-  if (release.episodes.length === 0) return null;
-  if (progress.length === 0) return { ordinal: release.episodes[0].ordinal, label: 'Смотреть' };
+/**
+ * С какой серии продолжить: первая недосмотренная после последней открытой. Серии берём
+ * из AniLibria и из Kodik (1…othersUpTo): некоторых тайтлов у AniLibria нет вовсе.
+ */
+export function resumeEpisode(
+  release: Release,
+  progress: EpisodeProgress[],
+  othersUpTo = 0,
+): { ordinal: number; label: string } | null {
+  const own = release.episodes.map((e) => e.ordinal);
+  const extra = Array.from({ length: Math.min(othersUpTo, 3000) }, (_, i) => i + 1);
+  const ordinals = [...new Set([...own, ...extra])].sort((a, b) => a - b);
+  if (ordinals.length === 0) return null;
+  if (progress.length === 0) return { ordinal: ordinals[0], label: 'Смотреть' };
   const last = [...progress].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   if (!last.watched) return { ordinal: last.ordinal, label: `Продолжить · ${last.ordinal} серия` };
-  const next = release.episodes.find((e) => e.ordinal > last.ordinal);
-  if (next) return { ordinal: next.ordinal, label: `Смотреть ${next.ordinal} серию` };
-  return { ordinal: release.episodes[0].ordinal, label: 'Пересмотреть' };
+  const next = ordinals.find((n) => n > last.ordinal);
+  if (next !== undefined) return { ordinal: next, label: `Смотреть ${next} серию` };
+  return { ordinal: ordinals[0], label: 'Пересмотреть' };
 }
 
 export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
@@ -61,10 +71,12 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   }
   if (!release) return null;
 
-  const resume = resumeEpisode(release, state.progress);
   const players = playersQuery.data?.players ?? [];
   const others = players.filter((p) => p.kind === 'iframe');
-  const othersUpTo = Math.max(0, ...others.map((p) => p.lastEpisode ?? 0));
+  const othersUpTo = Math.max(0, ...others.map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))));
+  // Общий плеер Kodik (без токена) не сообщает число серий — значит, есть хотя бы первая.
+  const resume = resumeEpisode(release, state.progress, others.length > 0 ? Math.max(othersUpTo, 1) : 0);
+  const ownVideo = release.episodes.some((e) => e.sources.length > 0);
   const episodes = settings.episodesDesc ? [...release.episodes].reverse() : release.episodes;
   const meta = [release.type, release.year, release.season, release.ageRating].filter(Boolean).join(' · ');
   const done = state.progress.filter((p) => p.watched).length;
@@ -123,13 +135,10 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
       </div>
 
       <div className="actions">
-        {resume && !release.blocked ? (
+        {resume && (others.length > 0 || (ownVideo && !release.blocked)) ? (
           <Link to={watchPath(release.alias || release.id, resume.ordinal)} className="btn primary grow">
-            <Icon name="play" size={20} /> {resume.label}
-          </Link>
-        ) : others.length > 0 ? (
-          <Link to={watchPath(release.alias || release.id, 1)} className="btn primary grow">
-            <Icon name="play" size={20} /> Смотреть в {others[0].title}
+            <Icon name="play" size={20} />{' '}
+            {resume.label === 'Смотреть' && !ownVideo ? `Смотреть в ${others[0].title}` : resume.label}
           </Link>
         ) : (
           <button className="btn primary grow" disabled>

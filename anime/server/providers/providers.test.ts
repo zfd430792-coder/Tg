@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 import { frameSrc, normalizeLink } from '../../shared/players.ts';
 import type { Release } from '../../shared/types.ts';
-import { Store } from '../db.ts';
-import { Alloha, Collaps, Lumex } from './balancers.ts';
-import { IdResolver, ShikimoriApi } from './ids.ts';
-import { kodikPlayer, noIds, playerLinkKey, toDubs, type KodikResult } from './kodik.ts';
+import { Players } from './index.ts';
+import { isKodikLink, KodikApi, kodikFallbackLink, kodikPlayer, playerLinkKey, toDubs, type KodikResult } from './kodik.ts';
 
 const result = (id: number, title: string, type: string, last: number, extra: Partial<KodikResult> = {}): KodikResult => ({
   id: `serial-${id}`,
@@ -35,6 +33,16 @@ describe('ссылки на плееры', () => {
     assert.equal(ours, 'https://kodik.info/serial/1/h/720p?translations=false&season=1&episode=2');
     const noSeason = frameSrc('https://kodik.info/serial/1/h/720p', { params: { ...params, season: null }, season: null, episode: 5 });
     assert.equal(noSeason, 'https://kodik.info/serial/1/h/720p?episode=5');
+  });
+
+  test('external_player встраиваем, только если это Kodik', () => {
+    assert.equal(isKodikLink('https://kodik.info/serial/1/h/720p'), true);
+    assert.equal(isKodikLink('https://kodikplayer.com/find-player?shikimoriID=1'), true);
+    assert.equal(isKodikLink('https://evil.example/kodik.info'), false);
+    assert.equal(isKodikLink('https://kodik.info.evil.example/x'), false);
+    const base = { shikimoriId: 5 } as Release;
+    assert.equal(kodikFallbackLink({ ...base, externalPlayer: 'https://evil.example/player' }), 'https://kodikplayer.com/find-player?shikimoriID=5');
+    assert.equal(kodikFallbackLink({ ...base, externalPlayer: 'https://kodik.info/serial/1/h/720p' }), 'https://kodik.info/serial/1/h/720p');
   });
 
   test('ключ для поиска Kodik по ссылке — без схемы и параметров', () => {
@@ -84,140 +92,76 @@ describe('озвучки Kodik', () => {
   });
 });
 
-// ---- Балансеры по ID Кинопоиска: ответы подменяем, сеть не нужна ----
+// ---- API Kodik и кэш плееров: ответы подменяем, сеть не нужна ----
 
-
-function stubFetch(routes: Record<string, (url: URL, init?: RequestInit) => unknown>) {
-  const calls: string[] = [];
+function stubFetch(routes: Record<string, (url: URL, body: URLSearchParams) => unknown>) {
+  const calls: URLSearchParams[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
-    calls.push(url.pathname);
+    const body = new URLSearchParams(String(init?.body ?? ''));
+    calls.push(body);
     const route = Object.keys(routes).find((prefix) => url.href.startsWith(prefix));
     if (!route) return new Response('not found', { status: 404 });
-    return new Response(JSON.stringify(routes[route](url, init)), { status: 200, headers: { 'content-type': 'application/json' } });
+    const answer = routes[route](url, body);
+    if (answer instanceof Response) return answer;
+    return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   return { calls, restore: () => (globalThis.fetch = original) };
 }
 
-const release = { id: 1, title: 'Тайтл', shikimoriId: 777 } as Release;
-const ids = (extra = {}) => ({ ...noIds(), shikimori: '777', kinopoisk: '555', ...extra });
-
-describe('Alloha', () => {
-  const seasons = [1, 2].map((season) => ({
-    season,
-    episodes: [1, 2, 3].map((episode) => ({ episode, translations: season === 2 && episode === 3 ? [{ id: 9 }] : [{ id: 9 }, { id: 10 }] })),
-  }));
-
-  test('озвучки с последней серией в нашем сезоне и параметры серии', async () => {
+describe('API Kodik', () => {
+  test('переводы ищем по ID Shikimori, а без него — запись по ссылке из AniLiberty', async () => {
     const stub = stubFetch({
-      'https://alloha.test/v2/movies/search': (url, init) => {
-        assert.equal(url.searchParams.get('kp'), '555');
-        assert.equal((init?.headers as Record<string, string>).authorization, 'Bearer T');
-        return { data: { iframe: '//alloha.player/?token_movie=x', translations: [{ id: 9, name: 'AniDUB' }, { id: 10, name: 'AniLibria' }], seasons } };
+      'https://kodik.test/search': (_url, body) => {
+        if (body.get('token') !== 'T') return { error: 'Отсутствует или неверный токен' };
+        if (body.get('player_link')) return { results: [result(1, 'AniLibria.TV', 'voice', 5, { shikimori_id: '888' })] };
+        if (body.get('shikimori_id') === '888') return { results: [result(609, 'AniDUB', 'voice', 6), result(610, 'AniLibria.TV', 'voice', 5)] };
+        return { results: [] };
       },
     });
     try {
-      const player = await new Alloha('T', 'https://alloha.test/v2').find(release, ids({ kpSeason: 2 }));
-      assert.equal(player?.season, '2');
-      assert.deepEqual(player?.dubs.map((d) => [d.title, d.lastEpisode]), [
-        ['AniDUB', 3],
-        ['AniLibria', 2],
-      ]);
-      assert.equal(player?.dubs[0].link, 'https://alloha.player/?token_movie=x&translation=9');
-      assert.equal(player?.frame?.episode, 'episode');
-    } finally {
-      stub.restore();
-    }
-  });
-
-  test('несколько сезонов, а наш неизвестен — серию выбирают в плеере', async () => {
-    const stub = stubFetch({ 'https://alloha.test/': () => ({ data: { iframe: 'https://alloha.player/?x=1', translations: [], seasons } }) });
-    try {
-      const player = await new Alloha('T', 'https://alloha.test/v2').find(release, ids());
-      assert.equal(player?.frame?.episode, null);
-      assert.equal(player?.season, null);
-    } finally {
-      stub.restore();
-    }
-  });
-
-  test('ошибка в ответе — плеера нет', async () => {
-    const stub = stubFetch({ 'https://alloha.test/': () => ({ status: 'error', error_info: 'not movie' }) });
-    try {
-      assert.equal(await new Alloha('T', 'https://alloha.test/v2').find(release, ids()), null);
-      assert.equal(await new Alloha('T', 'https://alloha.test/v2').find(release, noIds()), null, 'без ID Кинопоиска не ищем');
+      const api = new KodikApi('T', 'https://kodik.test');
+      const title = { id: 1, title: 'Тайтл', shikimoriId: 888, externalPlayer: null } as unknown as Release;
+      assert.equal((await api.translations(title)).length, 2);
+      const noShikimori = { ...title, shikimoriId: null, externalPlayer: 'https://kodik.info/serial/1/h/720p' } as unknown as Release;
+      assert.deepEqual(toDubs(await api.translations(noShikimori)).map((d) => d.title), ['AniDUB', 'AniLibria.TV']);
+      assert.equal(stub.calls[1].get('player_link'), 'kodik.info/serial/1/h/720p');
+      await assert.rejects(new KodikApi('wrong', 'https://kodik.test').search({ title: 'x' }), /неверный токен/);
     } finally {
       stub.restore();
     }
   });
 });
 
-describe('Collaps и Lumex', () => {
-  test('Collaps: один сезон — открываем серию, номера серий бывают строками', async () => {
+describe('кэш плееров', () => {
+  test('неполный список (Kodik не ответил) держим минуту, полный — 20 минут', async () => {
+    let calls = 0;
+    let up = false;
     const stub = stubFetch({
-      'https://collaps.test/franchise/details': (url) => {
-        assert.equal(url.searchParams.get('kinopoisk_id'), '555');
-        return { iframe_url: '//collaps.player/embed/kp/555', seasons: [{ season: 1, episodes: [{ episode: '1' }, { episode: '2-3' }] }] };
+      'https://kodik.test/search': () => {
+        calls++;
+        return up ? { results: [result(609, 'AniDUB', 'voice', 3)] } : new Response('down', { status: 502 });
       },
     });
+    mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
     try {
-      const player = await new Collaps('T', 'https://collaps.test').find(release, ids());
-      assert.equal(player?.link, 'https://collaps.player/embed/kp/555');
-      assert.equal(player?.lastEpisode, 2);
-      assert.equal(player?.frame?.episode, 'episode');
-      assert.equal(player?.dubs.length, 0);
+      const players = new Players({ kodikToken: 'T', kodikApi: 'https://kodik.test', log: () => undefined });
+      const title = { id: 5, title: 'Тайтл', shikimoriId: 777, externalPlayer: null, episodes: [] } as unknown as Release;
+      assert.equal((await players.forRelease(title)).length, 1, 'общий плеер Kodik по ID Shikimori');
+      await players.forRelease(title);
+      assert.equal(calls, 1, 'в течение минуты — из кэша');
+      up = true;
+      mock.timers.tick(61_000);
+      const full = await players.forRelease(title);
+      assert.equal(calls, 2);
+      assert.equal(full[0].dubs.length, 1);
+      mock.timers.tick(10 * 60_000);
+      await players.forRelease(title);
+      assert.equal(calls, 2, 'полный список ещё в кэше');
     } finally {
+      mock.timers.reset();
       stub.restore();
-    }
-  });
-
-  test('Lumex: по токену из API, без него — прямая ссылка по ID сайта', async () => {
-    const stub = stubFetch({ 'https://lumex.test/api/short': () => ({ result: true, data: [{ iframe_src: '//p.lumex.space/abc/tv-series/1' }] }) });
-    try {
-      const viaApi = await new Lumex('T', 'https://lumex.test/api', null).find(release, ids());
-      assert.equal(viaApi?.link, 'https://p.lumex.space/abc/tv-series/1');
-      assert.equal(viaApi?.frame?.episode, null);
-      const direct = await new Lumex(null, 'https://lumex.test/api', 'site42').find(release, ids());
-      assert.equal(direct?.link, 'https://p.lumex.space/site42?kp_id=555');
-      assert.equal(stub.calls.length, 1, 'прямая ссылка — без запроса к API');
-    } finally {
-      stub.restore();
-    }
-  });
-});
-
-describe('поиск ID Кинопоиска', () => {
-  test('берёт из Shikimori, кэширует в базе и не ходит туда снова', async () => {
-    const store = new Store(':memory:');
-    const stub = stubFetch({
-      'https://shiki.test/api/graphql': () => ({ data: { animes: [{ id: '777', externalLinks: [{ kind: 'kinopoisk', url: 'https://www.kinopoisk.ru/series/4242/' }] }] } }),
-    });
-    try {
-      const resolver = new IdResolver({ store, shikimori: new ShikimoriApi('https://shiki.test', 'test'), log: () => undefined });
-      const first = await resolver.resolve(release, { ...noIds(), shikimori: '777' });
-      assert.equal(first.kinopoisk, '4242');
-      const second = await resolver.resolve(release, { ...noIds(), shikimori: '777' });
-      assert.equal(second.kinopoisk, '4242');
-      assert.equal(stub.calls.length, 1);
-    } finally {
-      stub.restore();
-      store.close();
-    }
-  });
-
-  test('ID из Kodik сразу сохраняются, Shikimori не нужен', async () => {
-    const store = new Store(':memory:');
-    const stub = stubFetch({});
-    try {
-      const resolver = new IdResolver({ store, shikimori: new ShikimoriApi('https://shiki.test', 'test'), log: () => undefined });
-      const result = await resolver.resolve(release, { shikimori: '777', kinopoisk: '1', imdb: 'tt2', kpSeason: 3 });
-      assert.deepEqual([result.kinopoisk, result.kpSeason], ['1', 3]);
-      assert.equal(stub.calls.length, 0);
-      assert.equal(store.releaseIds(1)?.kinopoisk, '1');
-    } finally {
-      stub.restore();
-      store.close();
     }
   });
 });

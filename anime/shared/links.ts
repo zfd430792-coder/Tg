@@ -20,9 +20,9 @@ export function watchStartParam(releaseId: number, ordinal: number): string {
 
 export function startParamToPath(param: string | null | undefined): string | null {
   if (!param) return null;
-  const release = /^r_(\d+)$/.exec(param);
+  const release = /^r_(\d{1,8})$/.exec(param);
   if (release) return releasePath(release[1]);
-  const watch = /^w_(\d+)_(\d+(?:p\d+)?)$/.exec(param);
+  const watch = /^w_(\d{1,8})_(\d{1,4}(?:p\d{1,2})?)$/.exec(param);
   if (watch) return watchPath(watch[1], Number(watch[2].replace('p', '.')));
   return null;
 }

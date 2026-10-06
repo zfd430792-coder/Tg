@@ -78,6 +78,8 @@ describe('ссылки из Telegram', () => {
     assert.equal(startParamToPath('w_7_12p5'), '/watch/7/12.5');
     assert.equal(startParamToPath('r_9000'), '/release/9000');
     assert.equal(startParamToPath('../../etc'), null);
+    assert.equal(startParamToPath('w_1_999999999'), null);
+    assert.equal(startParamToPath('r_123456789012'), null);
   });
 });
 
@@ -193,6 +195,20 @@ describe('прогресс просмотра', () => {
     assert.equal(progress[1].watched, false);
     store.saveProgress(1, { releaseId: 10, episodeId: 'a1', ordinal: 1, time: 10, duration: 1400 });
     assert.equal(store.progress(1, 10)[0].watched, true, 'пересмотр начала не снимает отметку');
+    store.close();
+  });
+
+  test('одна серия — одна запись, даже если её ID сменился', () => {
+    const store = new Store(':memory:');
+    store.upsertUser({ id: 1, first_name: 'A' });
+    store.saveCard(release(10, 3, 't'));
+    store.saveCard(release(11, 3, 't'));
+    // Старый общий ID серии «только из Kodik» и новый, свой у каждого тайтла.
+    store.saveProgress(1, { releaseId: 10, episodeId: 'n4', ordinal: 4, time: 1390, duration: 1400 });
+    store.saveProgress(1, { releaseId: 11, episodeId: 'x11-4', ordinal: 4, time: 50, duration: 1400 });
+    store.saveProgress(1, { releaseId: 10, episodeId: 'x10-4', ordinal: 4, time: 20, duration: 1400 });
+    assert.deepEqual(store.progress(1, 10).map((p) => [p.episodeId, p.watched]), [['x10-4', true]], 'отметка «просмотрено» перенесена');
+    assert.deepEqual(store.progress(1, 11).map((p) => p.episodeId), ['x11-4'], 'другой тайтл не тронут');
     store.close();
   });
 });

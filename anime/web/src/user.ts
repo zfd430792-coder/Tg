@@ -98,8 +98,14 @@ const local: UserData = {
   async saveProgress(card, input) {
     rememberCard(card);
     const all = readJson<Record<string, LocalProgress>>(PROGRESS, {});
-    const previous = all[input.episodeId];
-    const watched = Boolean(previous?.watched || input.watched || (input.duration > 0 && input.time / input.duration >= 0.92));
+    let previousWatched = Boolean(all[input.episodeId]?.watched);
+    // Та же серия под другим ID (см. Store.saveProgress на сервере) — оставляем одну запись.
+    for (const [key, p] of Object.entries(all)) {
+      if (key === input.episodeId || p.releaseId !== input.releaseId || p.ordinal !== input.ordinal) continue;
+      previousWatched ||= Boolean(p.watched);
+      delete all[key];
+    }
+    const watched = Boolean(previousWatched || input.watched || (input.duration > 0 && input.time / input.duration >= 0.92));
     all[input.episodeId] = { ...input, watched, updatedAt: new Date().toISOString() };
     const entries = Object.entries(all);
     if (entries.length > 3000) {

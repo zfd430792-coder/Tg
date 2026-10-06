@@ -54,21 +54,7 @@ if (telegram) {
   notifier.start(config.notifyInterval);
 }
 
-const players = new Players({
-  kodikToken: config.kodikToken,
-  kodikApi: config.kodikApi,
-  allohaToken: config.allohaToken,
-  allohaApi: config.allohaApi,
-  collapsToken: config.collapsToken,
-  collapsApi: config.collapsApi,
-  lumexToken: config.lumexToken,
-  lumexApi: config.lumexApi,
-  lumexClientId: config.lumexClientId,
-  shikimoriUrl: config.shikimoriUrl,
-  userAgent: `${config.appName}/0.1 (+${config.siteUrl ?? 'local'})`,
-  store,
-  log,
-});
+const players = new Players({ kodikToken: config.kodikToken, kodikApi: config.kodikApi, log });
 console.log(`Плееры: ${players.enabled.join(', ')}`);
 const app = await buildServer({ config, api, store, hosts, notifier, botUsername, players });
 await app.listen({ port: config.port, host: config.host });

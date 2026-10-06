@@ -78,11 +78,11 @@ export interface Dub {
 }
 
 /**
- * Источник видео для тайтла: наш HLS-плеер AniLibria или встроенный плеер
- * видеобалансера (Kodik, Alloha, Collaps…), как переключатель «плеер» на аниме-сайтах.
+ * Источник видео для тайтла: наш HLS-плеер AniLibria или встроенный плеер Kodik,
+ * как переключатель «плеер» на аниме-сайтах.
  */
 export interface PlayerSource {
-  /** 'anilibria', 'kodik', 'alloha'… */
+  /** 'anilibria' или 'kodik'. */
   id: string;
   title: string;
   kind: 'hls' | 'iframe';
@@ -92,13 +92,13 @@ export interface PlayerSource {
   dubs: Dub[];
   /** Как управлять плеером через адрес iframe; null — у нашего HLS-плеера. */
   frame: FrameParams | null;
-  /** Плеер сообщает время и серию через postMessage (как Kodik) — тогда сохраняем прогресс. */
+  /** Как плеер сообщает время через postMessage: 'kodik' — {key, value}; null — у нашего HLS-плеера. */
   events: 'kodik' | null;
   lastEpisode: number | null;
   season: string | null;
 }
 
-/** Параметры адреса встроенного плеера: у каждого балансера свои. */
+/** Параметры адреса встроенного плеера (имена параметров Kodik). */
 export interface FrameParams {
   /** Имя параметра сезона и серии; null — серию выбирают в самом плеере. */
   season: string | null;

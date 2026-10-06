@@ -59,6 +59,8 @@ function parseProgress(body: unknown): ProgressInput {
     typeof b.episodeId !== 'string' ||
     !/^[\w-]{1,64}$/.test(b.episodeId) ||
     !Number.isFinite(ordinal) ||
+    ordinal < 0 ||
+    ordinal > 10_000 ||
     !Number.isFinite(time) ||
     !Number.isFinite(duration) ||
     time < 0 ||

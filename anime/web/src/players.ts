@@ -37,13 +37,18 @@ export function savedChoice(releaseId: number): Choice | null {
   return read<Record<string, Choice>>(KEY, {})[releaseId] ?? null;
 }
 
+export function lastChoice(): Last | null {
+  return read<Last | null>(LAST, null);
+}
+
 export function saveChoice(releaseId: number, choice: Choice, dubTitle: string | null): void {
   const all = read<Record<string, Choice>>(KEY, {});
   all[releaseId] = choice;
   const keys = Object.keys(all);
   if (keys.length > 500) for (const key of keys.slice(0, keys.length - 500)) delete all[key];
   write(KEY, all);
-  write(LAST, { player: choice.player, dubTitle } satisfies Last);
+  // Любимую студию не теряем, если выбрали плеер без списка озвучек (AniLibria, общий Kodik).
+  write(LAST, { player: choice.player, dubTitle: dubTitle ?? lastChoice()?.dubTitle ?? null } satisfies Last);
 }
 
 /** Плеер и озвучка: сохранённые для тайтла → последние выбранные → первые в списке. */
