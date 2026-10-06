@@ -54,25 +54,46 @@ export interface Release extends ReleaseCard {
   favorites: number | null;
   blocked: boolean;
   voices: string[];
+  /** Плеер Kodik, который AniLiberty сам даёт для тайтла (поле external_player). */
+  externalPlayer: string | null;
   episodes: Episode[];
 }
 
-/**
- * Озвучка (или субтитры) тайтла. AniLibria играет наш HLS-плеер, остальные —
- * встроенный плеер Kodik по ссылке из его API.
- */
+/** Озвучка внутри плеера, которую можно выбрать на нашей странице (у Kodik — по токену). */
 export interface Dub {
-  /** 'anilibria', 'kodik:<id перевода>' или 'kodik' — общий плеер Kodik с выбором внутри. */
+  /** 'kodik:<id перевода>' */
+  id: string;
+  title: string;
+  type: 'voice' | 'subtitles' | null;
+  /** Ссылка на плеер этой озвучки. */
+  link: string;
+  /** Последняя вышедшая серия в этой озвучке, если известна. */
+  lastEpisode: number | null;
+  /** Ключ сезона у Kodik ('1', '4'…): нужен, чтобы открыть конкретную серию. */
+  season: string | null;
+}
+
+/**
+ * Источник видео для тайтла: наш HLS-плеер AniLibria или встроенный плеер
+ * видеобалансера (Kodik, Alloha, Collaps…), как переключатель «плеер» на аниме-сайтах.
+ */
+export interface PlayerSource {
+  /** 'anilibria', 'kodik', 'alloha'… */
   id: string;
   title: string;
   kind: 'hls' | 'iframe';
-  type: 'voice' | 'subtitles' | null;
-  /** Ссылка на плеер Kodik для этого перевода (только для iframe). */
+  /** Ссылка на плеер тайтла, когда озвучку выбирают внутри самого плеера. */
   link: string | null;
-  /** Последняя вышедшая серия в этой озвучке, если известна. */
+  /** Озвучки, которые можно выбрать снаружи. Пусто — выбор внутри плеера. */
+  dubs: Dub[];
+  /** Как открыть серию в iframe: имена параметров запроса. null — серию выбирают в самом плеере. */
+  episodeParams: { season: string | null; episode: string } | null;
   lastEpisode: number | null;
-  /** Номер сезона у Kodik, если у тайтла их несколько. */
-  season: number | null;
+  season: string | null;
+}
+
+export interface PlayersResponse {
+  players: PlayerSource[];
 }
 
 export interface ScheduleItem {

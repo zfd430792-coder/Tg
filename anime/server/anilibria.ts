@@ -4,6 +4,7 @@
 
 import type { Episode, Genre, Option, Page, References, Release, ReleaseCard, ScheduleDay, TimeRange, VideoSource } from '../shared/types.ts';
 import { TtlCache } from './cache.ts';
+import { normalizeLink } from '../shared/players.ts';
 import { HostRegistry, absoluteUrl, proxiedUrl } from './media.ts';
 
 // Ответы чужого API разбираем как есть и тут же приводим к своим типам.
@@ -163,6 +164,7 @@ export class AniLiberty {
       favorites: int(raw.added_in_users_favorites),
       blocked: Boolean(raw.is_blocked_by_geo || raw.is_blocked_by_copyrights),
       voices: [...new Set(voices)],
+      externalPlayer: normalizeLink(text(raw.external_player)),
       episodes: list(raw.episodes)
         .map((e) => this.episode(e))
         .sort((a, b) => a.ordinal - b.ordinal),

@@ -6,13 +6,14 @@ import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import type { Page, Release, ReleaseCard } from '../shared/types.ts';
+import type { Page, PlayersResponse, Release, ReleaseCard } from '../shared/types.ts';
 import { AniLiberty } from './anilibria.ts';
 import { signInitData } from './auth.ts';
 import { config } from './config.ts';
 import { Store } from './db.ts';
 import { buildServer } from './http.ts';
 import { HostRegistry } from './media.ts';
+import { Players } from './providers/index.ts';
 
 const TOKEN = '123456:TEST';
 const root = path.resolve(import.meta.dirname, '..');
@@ -29,6 +30,7 @@ function freePort(): Promise<number> {
 let mock: ChildProcess;
 let app: Awaited<ReturnType<typeof buildServer>>;
 let store: Store;
+let mockOrigin = '';
 
 const auth = () => ({
   authorization: `tma ${signInitData({ user: JSON.stringify({ id: 5, first_name: 'Тест' }), auth_date: String(Math.floor(Date.now() / 1000)) }, TOKEN)}`,
@@ -42,6 +44,7 @@ before(async () => {
     mock.on('exit', (code) => reject(new Error(`мок завершился с кодом ${code}`)));
   });
   const origin = `http://localhost:${port}`;
+  mockOrigin = origin;
   const hosts = new HostRegistry();
   const api = new AniLiberty({ apiBase: `${origin}/api/v1`, mediaBase: origin, hlsProxy: true, hosts, userAgent: 'test' });
   store = new Store(':memory:');
@@ -52,6 +55,7 @@ before(async () => {
     hosts,
     notifier: null,
     botUsername: 'animini_bot',
+    players: new Players({ kodikToken: 'test-kodik', kodikApi: `${origin}/kodik-api`, log: () => undefined }),
   });
 });
 
@@ -111,6 +115,32 @@ describe('публичное API', () => {
     const media = await app.inject(segment);
     assert.equal(media.statusCode, 200);
     assert.ok(media.rawPayload.length > 1000);
+  });
+});
+
+describe('плееры', () => {
+  test('AniLibria и Kodik со списком озвучек по токену', async () => {
+    const res = await app.inject('/api/releases/jujutsu-kaisen/players');
+    assert.equal(res.statusCode, 200);
+    const { players } = res.json<PlayersResponse>();
+    assert.deepEqual(players.map((p) => p.id), ['anilibria', 'kodik']);
+    const kodik = players[1];
+    assert.deepEqual(kodik.dubs.map((d) => d.title), ['AniDUB', 'AniLibria.TV', 'SHIZA Project', 'Субтитры']);
+    assert.ok(kodik.dubs.every((d) => d.link.startsWith('http://localhost:')));
+  });
+
+  test('тайтл без серий AniLibria — только Kodik', async () => {
+    const { players } = (await app.inject('/api/releases/dr-stone/players')).json<PlayersResponse>();
+    assert.deepEqual(players.map((p) => p.id), ['kodik']);
+    assert.equal(players[0].lastEpisode, 3);
+  });
+
+  test('неверный токен Kodik — общий плеер из ссылки AniLiberty', async () => {
+    const release = (await app.inject('/api/releases/9001')).json<Release>();
+    const players = await new Players({ kodikToken: 'wrong', kodikApi: `${mockOrigin}/kodik-api`, log: () => undefined }).forRelease(release);
+    const kodik = players.find((p) => p.id === 'kodik');
+    assert.equal(kodik?.dubs.length, 0);
+    assert.match(kodik?.link ?? '', /\/kodik\/serial\/9001\/base\/720p/);
   });
 });
 

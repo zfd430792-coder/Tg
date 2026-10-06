@@ -14,7 +14,7 @@
     "build": "vite build web",
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
-    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"server/**/*.test.ts\""
+    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"server/**/*.test.ts\" \"server/providers/*.test.ts\""
   },
   "dependencies": {
     "@fastify/static": "^8.3.0",

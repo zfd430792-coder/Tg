@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { releaseStartParam, watchPath } from '../../../shared/links.ts';
-import type { AppConfig, EpisodeProgress, Release, ReleaseUserState } from '../../../shared/types.ts';
+import type { AppConfig, EpisodeProgress, PlayersResponse, Release, ReleaseUserState } from '../../../shared/types.ts';
 import { useFetch } from '../api.ts';
 import { Icon } from '../components/icons.tsx';
 import { BackLink, ErrorState, Poster, Progress, Spinner } from '../components/ui.tsx';
-import { episodesCount, minutes } from '../format.ts';
+import { episodesCount, minutes, plural } from '../format.ts';
 import { Link, navigate } from '../router.ts';
 import { ensureWriteAccess, haptic, shareLink, tg } from '../telegram.ts';
 import { updateSettings, userData, useSettings } from '../user.ts';
@@ -32,6 +32,7 @@ export function resumeEpisode(release: Release, progress: EpisodeProgress[]): { 
 
 export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   const { data: release, error, loading, reload } = useFetch<Release>(`/api/releases/${encodeURIComponent(id)}`);
+  const playersQuery = useFetch<PlayersResponse>(release ? `/api/releases/${encodeURIComponent(id)}/players` : null, 10 * 60_000);
   const [state, setState] = useState<ReleaseUserState>(emptyState);
   const [expanded, setExpanded] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -61,6 +62,9 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   if (!release) return null;
 
   const resume = resumeEpisode(release, state.progress);
+  const players = playersQuery.data?.players ?? [];
+  const others = players.filter((p) => p.kind === 'iframe');
+  const othersUpTo = Math.max(0, ...others.map((p) => p.lastEpisode ?? 0));
   const episodes = settings.episodesDesc ? [...release.episodes].reverse() : release.episodes;
   const meta = [release.type, release.year, release.season, release.ageRating].filter(Boolean).join(' · ');
   const done = state.progress.filter((p) => p.watched).length;
@@ -123,6 +127,10 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
           <Link to={watchPath(release.alias || release.id, resume.ordinal)} className="btn primary grow">
             <Icon name="play" size={20} /> {resume.label}
           </Link>
+        ) : others.length > 0 ? (
+          <Link to={watchPath(release.alias || release.id, 1)} className="btn primary grow">
+            <Icon name="play" size={20} /> Смотреть в {others[0].title}
+          </Link>
         ) : (
           <button className="btn primary grow" disabled>
             {release.blocked ? 'Недоступно в вашем регионе' : 'Серий пока нет'}
@@ -164,7 +172,15 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
         </div>
       )}
 
-      {release.voices.length > 0 && <p className="hint">Озвучка: {release.voices.join(', ')}</p>}
+      {release.voices.length > 0 && <p className="hint">Озвучка AniLibria: {release.voices.join(', ')}</p>}
+      {players.length > 0 && (
+        <p className="hint">
+          Плееры:{' '}
+          {players
+            .map((p) => (p.dubs.length > 1 ? `${p.title} (${p.dubs.length} ${plural(p.dubs.length, 'озвучка', 'озвучки', 'озвучек')})` : p.title))
+            .join(' · ')}
+        </p>
+      )}
 
       <div className="section-head">
         <h2>
@@ -206,7 +222,13 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
         })}
       </ol>
 
-      {release.episodes.length === 0 && !release.blocked && (
+      {release.episodes.length === 0 && others.length > 0 && (
+        <p className="hint center">
+          У AniLibria серий пока нет — смотрите в {others[0].title}
+          {othersUpTo ? `: вышло ${episodesCount(othersUpTo)}` : ''}.
+        </p>
+      )}
+      {release.episodes.length === 0 && others.length === 0 && !release.blocked && !playersQuery.loading && (
         <p className="hint center">Серии ещё не вышли. Нажмите 🔔 — пришлём, когда появится первая.</p>
       )}
 

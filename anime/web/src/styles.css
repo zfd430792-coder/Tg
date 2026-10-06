@@ -1404,3 +1404,79 @@ input[type='checkbox']:checked::after {
     display: none;
   }
 }
+
+/* ---- Выбор плеера и озвучки ---- */
+
+.sources {
+  margin: 12px 0 2px;
+}
+
+.source-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin: 0 -16px 8px;
+  padding: 0 16px;
+  scrollbar-width: none;
+}
+
+.source-row::-webkit-scrollbar {
+  display: none;
+}
+
+.source-row.dubs .chip {
+  height: 30px;
+  font-size: 13px;
+}
+
+.chip-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.chip.active .chip-count {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.chip.missing {
+  opacity: 0.5;
+}
+
+.source-loading {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.player.frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.player.notice-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  text-align: center;
+  color: #fff;
+}
+
+.player.notice-screen p {
+  margin: 0;
+}
+
+.ep-chip.missing:not(.current) {
+  opacity: 0.4;
+}

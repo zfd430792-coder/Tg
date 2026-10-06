@@ -123,6 +123,7 @@ function release(id: number, episodes: number, freshAt: string): Release {
     favorites: 0,
     blocked: false,
     voices: [],
+    externalPlayer: null,
     episodes: Array.from({ length: episodes }, (_, i) => episode(i + 1)),
   };
 }

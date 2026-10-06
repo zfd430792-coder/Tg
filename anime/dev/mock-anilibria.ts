@@ -141,7 +141,9 @@ const releases: Raw[] = TITLES.map(([main, english], i) => {
       { id: `m${id}b`, role: { value: 'voicing', description: 'Озвучка' }, nickname: 'Hekomi' },
       { id: `m${id}c`, role: { value: 'timing', description: 'Тайминг' }, nickname: 'Sharon' },
     ],
-    episodes: Array.from({ length: released }, (_, n) => makeEpisode(id, n + 1)),
+    external_player: `${ORIGIN.replace(/^https?:/, '')}/kodik/serial/${id}/base/720p?translations=false`,
+    // «Доктор Стоун» AniLibria ещё не озвучила — смотреть можно только в других плеерах.
+    episodes: i === 11 ? [] : Array.from({ length: released }, (_, n) => makeEpisode(id, n + 1)),
   };
 });
 
@@ -207,6 +209,105 @@ function catalog(body: Raw) {
   return paginate(items, Number(body.page) || 1, Number(body.limit) || 10);
 }
 
+// ---- Мок Kodik: API с токеном и страница плеера, которая шлёт события как настоящая ----
+
+const KODIK_TOKEN = 'test-kodik';
+const TRANSLATIONS = [
+  { id: 609, title: 'AniDUB', type: 'voice', extra: 2 },
+  { id: 610, title: 'AniLibria.TV', type: 'voice', extra: 0 },
+  { id: 767, title: 'SHIZA Project', type: 'voice', extra: -1 },
+  { id: 869, title: 'Субтитры', type: 'subtitles', extra: 2 },
+];
+
+function kodikEpisodes(r: Raw, extra: number): number {
+  const base = Math.max(r.episodes.length, 1);
+  return Math.max(1, Math.min(r.episodes_total ?? base + extra, base + extra));
+}
+
+function kodikResult(r: Raw, t: (typeof TRANSLATIONS)[number]): Raw {
+  const index = releases.indexOf(r);
+  const movie = r.type.value === 'MOVIE';
+  return {
+    id: `${movie ? 'movie' : 'serial'}-${r.id}${t.id}`,
+    type: movie ? 'anime' : 'anime-serial',
+    link: `${ORIGIN.replace(/^https?:/, '')}/kodik/serial/${r.id}/t${t.id}/720p`,
+    title: r.name.main,
+    title_orig: r.name.english,
+    other_title: r.name.english,
+    year: r.year,
+    translation: { id: t.id, title: t.title, type: t.type },
+    last_season: movie ? undefined : 1,
+    last_episode: movie ? undefined : kodikEpisodes(r, t.extra),
+    episodes_count: movie ? undefined : kodikEpisodes(r, t.extra),
+    shikimori_id: String(50000 + index),
+    kinopoisk_id: String(1000000 + index),
+    imdb_id: `tt${7000000 + index}`,
+  };
+}
+
+function kodikSearch(params: URLSearchParams): Raw {
+  if (params.get('token') !== KODIK_TOKEN) return { error: 'Отсутствует или неверный токен' };
+  let results: Raw[] = [];
+  const link = params.get('player_link');
+  const shikimori = params.get('shikimori_id');
+  const title = params.get('title')?.toLowerCase();
+  if (link) {
+    const r = releases.find((x) => x.external_player.replace(/^\/\//, '').replace(/[?#].*$/, '') === link);
+    if (r) results = [kodikResult(r, TRANSLATIONS[1])];
+  } else if (shikimori) {
+    const r = releases[Number(shikimori) - 50000];
+    if (r) results = TRANSLATIONS.map((t) => kodikResult(r, t));
+  } else if (title) {
+    results = releases.filter((r) => r.name.main.toLowerCase().includes(title)).map((r) => kodikResult(r, TRANSLATIONS[0]));
+  }
+  return { time: '1ms', total: results.length, results };
+}
+
+function kodikPage(r: Raw, hash: string): string {
+  const t = TRANSLATIONS.find((x) => `t${x.id}` === hash) ?? TRANSLATIONS[1];
+  const links = TRANSLATIONS.map((x) => ({ title: x.title, link: `/kodik/serial/${r.id}/t${x.id}/720p` }));
+  const total = kodikEpisodes(r, t.extra);
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Kodik (мок)</title>
+<style>body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:#101418;color:#fff;font:14px sans-serif}
+button{margin:2px;padding:4px 8px} .on{background:#2ea6ff;color:#fff}</style>
+<div id="info"></div><div id="time">0</div><div id="dubs"></div><div id="eps"></div>
+<script>
+const q = new URLSearchParams(location.search);
+const episode = Number(q.get('episode') || 1), season = Number(q.get('season') || 1);
+const translation = { id: ${t.id}, title: ${JSON.stringify(t.title)} };
+document.getElementById('info').textContent = 'Kodik (мок) · ' + translation.title + ' · серия ' + episode;
+const post = (key, value) => parent.postMessage(value === undefined ? { key } : { key, value }, '*');
+let time = 0;
+post('kodik_player_current_episode', { episode, season, translation });
+post('kodik_player_duration_update', 60);
+setInterval(() => {
+  time += 1;
+  document.getElementById('time').textContent = time;
+  post('kodik_player_time_update', time);
+  if (time === 60) post('kodik_player_video_ended');
+}, 1000);
+addEventListener('message', (e) => {
+  if (e.data && e.data.key === 'kodik_player_api' && e.data.value && e.data.value.method === 'seek') time = Number(e.data.value.seconds) || 0;
+});
+if (q.get('translations') !== 'false' && q.get('hide_selectors') !== 'true') {
+  for (const d of ${JSON.stringify(links)}) {
+    const b = document.createElement('button');
+    b.textContent = d.title; b.className = d.title === translation.title ? 'on' : '';
+    b.onclick = () => { location.href = d.link + '?episode=' + episode; };
+    document.getElementById('dubs').append(b);
+  }
+}
+if (q.get('hide_selectors') !== 'true') {
+  for (let n = 1; n <= ${total}; n++) {
+    const b = document.createElement('button');
+    b.textContent = n; b.className = n === episode ? 'on ep' : 'ep';
+    b.onclick = () => { const p = new URLSearchParams(location.search); p.set('episode', n); location.search = p; };
+    document.getElementById('eps').append(b);
+  }
+}
+</script></html>`;
+}
+
 function readBody(req: IncomingMessage): Promise<Raw> {
   return new Promise((resolve) => {
     let data = '';
@@ -255,6 +356,20 @@ const server = createServer(async (req, res) => {
   }
   if ((m = /^\/videos\/(\d+)\/([\w.]+)$/.exec(p))) {
     serveMedia(req, res, `${m[1]}/${m[2]}`);
+    return;
+  }
+
+  if (p === '/kodik-api/search' && req.method === 'POST') {
+    const body = await new Promise<string>((resolve) => {
+      let data = '';
+      req.on('data', (chunk) => (data += chunk));
+      req.on('end', () => resolve(data));
+    });
+    return send(res, 200, kodikSearch(new URLSearchParams(body)));
+  }
+  if ((m = /^\/kodik\/serial\/(\d+)\/(\w+)\/720p$/.exec(p))) {
+    const r = releases.find((x) => x.id === Number(m![1]));
+    res.writeHead(r ? 200 : 404, { 'content-type': 'text/html; charset=utf-8' }).end(r ? kodikPage(r, m[2]) : 'нет');
     return;
   }
 

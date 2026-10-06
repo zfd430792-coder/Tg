@@ -11,6 +11,7 @@ import type { Config } from './config.ts';
 import type { Store } from './db.ts';
 import { buildMaster, proxiedUrl, rewritePlaylist, type HostRegistry } from './media.ts';
 import type { Notifier } from './notifier.ts';
+import type { Players } from './providers/index.ts';
 
 export interface HttpDeps {
   config: Config;
@@ -18,6 +19,7 @@ export interface HttpDeps {
   store: Store;
   hosts: HostRegistry;
   notifier: Notifier | null;
+  players: Players;
   /** Есть ли у бота право писать пользователю — нужно для подписок. */
   botUsername: string | null;
 }
@@ -178,6 +180,14 @@ export async function buildServer(deps: HttpDeps) {
     if (!/^[\w-]{1,120}$/.test(idOrAlias)) throw new HttpError(400, 'Неверный адрес релиза');
     cacheFor(reply, 60);
     return loadRelease(idOrAlias);
+  });
+
+  app.get('/api/releases/:idOrAlias/players', async (request, reply) => {
+    const { idOrAlias } = request.params as { idOrAlias: string };
+    if (!/^[\w-]{1,120}$/.test(idOrAlias)) throw new HttpError(400, 'Неверный адрес релиза');
+    const release = await loadRelease(idOrAlias);
+    cacheFor(reply, 300);
+    return { players: await deps.players.forRelease(release) };
   });
 
   // Мастер-плейлист из отдельных качеств: с ним hls.js сам выбирает качество

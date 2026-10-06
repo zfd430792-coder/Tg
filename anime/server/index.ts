@@ -7,6 +7,7 @@ import { Store } from './db.ts';
 import { buildServer } from './http.ts';
 import { HostRegistry } from './media.ts';
 import { Notifier } from './notifier.ts';
+import { Players } from './providers/index.ts';
 
 const hosts = new HostRegistry(config.hlsHosts);
 const api = new AniLiberty({
@@ -53,7 +54,8 @@ if (telegram) {
   notifier.start(config.notifyInterval);
 }
 
-const app = await buildServer({ config, api, store, hosts, notifier, botUsername });
+const players = new Players({ kodikToken: config.kodikToken, kodikApi: config.kodikApi, log });
+const app = await buildServer({ config, api, store, hosts, notifier, botUsername, players });
 await app.listen({ port: config.port, host: config.host });
 
 if (telegram) {
