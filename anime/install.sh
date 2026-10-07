@@ -222,7 +222,7 @@ ask_options() {
   if [[ -z "${KODIK_TOKEN+x}" ]]; then
     printf '  Другие озвучки (AniDub, Studio Band, Dream Cast…) берутся из Kodik. С токеном Kodik у каждой\n' >&2
     printf '  озвучки будет своя кнопка; без него — общий плеер Kodik со своим выбором внутри.\n' >&2
-    printf '  Токен выдают по запросу на support@kodik.biz. Enter — пропустить%s.\n' "${current:+ (оставить текущий)}" >&2
+    printf '  Токен выдают по письму на support@kodikres.com (укажите адрес сайта). Enter — пропустить%s.\n' "${current:+ (оставить текущий)}" >&2
     KODIK_TOKEN=$(ask_secret "Токен Kodik")
     KODIK_TOKEN=${KODIK_TOKEN:-$current}
   fi

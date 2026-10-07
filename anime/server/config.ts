@@ -36,7 +36,7 @@ export const config = {
   hlsProxy: flag('HLS_PROXY'),
   hlsHosts: (str('HLS_HOSTS') ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
 
-  /** Токен Kodik (выдают по запросу на support@kodik.biz): список озвучек других студий. */
+  /** Токен Kodik (выдают по запросу на support@kodikres.com — старый kodik.biz с марта 2026 не работает): список озвучек других студий. */
   kodikToken: str('KODIK_TOKEN'),
   kodikApi: str('KODIK_API', 'https://kodik-api.com')!.replace(/\/+$/, ''),
 
