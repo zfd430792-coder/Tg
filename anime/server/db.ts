@@ -101,8 +101,8 @@ export interface TorrentRow {
   title: string | null;
   seeders: number | null;
   size: number | null;
-  /** Как разбирать раздачу: сезон тайтла и сборник ли это сезонов. */
-  hint: { season: number; pack: boolean } | null;
+  /** Как разбирать раздачу: сезон тайтла, сборник ли это сезонов, сколько серий в тайтле и последний ли это сезон сборника. */
+  hint: { season: number; pack: boolean; episodes?: number | null; lastSeason?: boolean } | null;
 }
 
 /** Раздача, которую нашёл поиск (см. torrents/search.ts). */
@@ -115,6 +115,8 @@ export interface FoundTorrentInput {
   size: number | null;
   season: number;
   pack: boolean;
+  episodes?: number | null;
+  lastSeason?: boolean;
 }
 
 function json<T>(value: unknown): T | null {
@@ -385,7 +387,8 @@ export class Store {
            error = CASE WHEN torrents.status = 'error' THEN NULL ELSE torrents.error END`,
       );
       for (const t of found) {
-        upsert.run(releaseId, t.magnet, t.infoHash, now(), t.source, t.title, t.seeders, t.size, JSON.stringify({ season: t.season, pack: t.pack }));
+        const hint = { season: t.season, pack: t.pack, episodes: t.episodes ?? null, lastSeason: t.lastSeason ?? true };
+        upsert.run(releaseId, t.magnet, t.infoHash, now(), t.source, t.title, t.seeders, t.size, JSON.stringify(hint));
       }
       const wanted = new Set(found.map((t) => t.infoHash));
       const rows = this.db.prepare(`SELECT id, info_hash, source FROM torrents WHERE release_id = ? AND source != 'manual'`).all(releaseId) as Row[];

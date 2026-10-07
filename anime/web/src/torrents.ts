@@ -32,14 +32,21 @@ export function canPlayCodec(codec: string | null, tenBit = false): boolean {
   return ok;
 }
 
-export const playable = (v: TorrentVariant) => canPlayCodec(v.codec, v.tenBit);
+/**
+ * Вариант для этого браузера: HEVC и AV1, которых он не покажет, сервер перекодирует в
+ * H.264 (не выше 1080p) — так озвучка из такой раздачи всё равно доступна.
+ */
+export function forBrowser(v: TorrentVariant): TorrentVariant {
+  if (canPlayCodec(v.codec, v.tenBit)) return v;
+  return { ...v, codec: 'h264', tenBit: false, transcode: true, convert: true, height: v.height ? Math.min(v.height, 1080) : null };
+}
 
 /**
- * Плеер «Торрент» для этого браузера: озвучки, у которых есть видео, которое он покажет,
- * с качеством и сериями только по таким вариантам. Нечего показать и не ищем — плеера нет.
+ * Плеер «Торрент» для этого браузера: варианты, которые он покажет (или сервер перекодирует),
+ * качество и серии озвучек — по ним. Нечего показать и не ищем — плеера нет.
  */
 export function adaptTorrentSource(player: PlayerSource): PlayerSource | null {
-  const variants = (player.variants ?? []).filter(playable);
+  const variants = (player.variants ?? []).map(forBrowser);
   const dubs: Dub[] = [];
   for (const dub of player.dubs) {
     const own = variants.filter((v) => v.dub === dub.id);

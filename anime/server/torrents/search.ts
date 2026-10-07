@@ -6,6 +6,7 @@
 // раздающих — по паре на каждое качество.
 
 import type { Release } from '../../shared/types.ts';
+import type { FoundTorrentInput } from '../db.ts';
 import { infoHashOf, OPEN_TRACKERS, safeMagnet } from './magnet.ts';
 import { studioOrder, studiosIn } from './studios.ts';
 import { heightOf, type JacredInfo, matchTorrent, releaseTarget, searchQueries, type TitleFacts, titleFacts } from './titles.ts';
@@ -32,10 +33,15 @@ export interface Candidate extends FoundTorrent {
   /** Сезон тайтла и сборник ли это сезонов — чтобы из сборника взять папку своего сезона. */
   season: number;
   pack: boolean;
+  /** Серий в тайтле и последний ли это сезон сборника: в сборнике без папок по ним считаем номера. */
+  episodes: number | null;
+  lastSeason: boolean;
 }
 
 export interface SearchReport {
   candidates: Candidate[];
+  /** Все подошедшие тайтлу, в том числе не выбранные. */
+  matchedList: Candidate[];
   /** Сколько раздач нашлось всего и сколько подошло тайтлу. */
   found: number;
   matched: number;
@@ -54,6 +60,22 @@ export interface TorrentSearchOptions {
   /** Раздачи тайтла от самой AniLibria. */
   anilibria: { releaseTorrents(releaseId: number): Promise<unknown[]> } | null;
   fetch?: typeof fetch;
+  /** Пауза между запросами к одному сайту, мс: на два запроса сразу jac.red отвечает 429. */
+  interval?: number;
+  /** Сколько ждать перед повтором после 429, если сайт не сказал сам, мс (умножается на номер попытки). */
+  retryDelay?: number;
+}
+
+/** Когда к сайту поиска можно обратиться снова (общая очередь на процесс). */
+const nextRequest = new Map<string, number>();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Раздачи, которые не нужны даже с подходящим названием: украинская озвучка, raw без перевода. */
+export function skipReason(item: Pick<FoundTorrent, 'title' | 'tracker'>): string | null {
+  const name = item.title.split(/\s\/\s|\[/)[0];
+  if (/[іїєґ]/i.test(name) || /^(toloka|mazepa)(,|$)/i.test(item.tracker.trim())) return 'украинская раздача';
+  if (/(?<![a-z])raw(?![a-z])/i.test(item.title)) return 'без перевода (raw)';
+  return null;
 }
 
 type Raw = Record<string, any>;
@@ -148,8 +170,10 @@ export function pickCandidates(matched: Candidate[], limit = MAX_CANDIDATES): Ca
   const take = (c: Candidate | undefined) => c && !picked.includes(c) && picked.length < limit && picked.push(c);
   const bySeeders = (a: Candidate, b: Candidate) => b.seeders - a.seeders;
 
+  // У AniLibria — 1080p в H.264, если есть: его покажет любой браузер, HEVC — не любой.
   const own = matched.filter((c) => c.source === 'anilibria').sort(bySeeders);
-  take(own.find((c) => bucket(c.height) === 1080) ?? own[0]);
+  const hevc = (c: Candidate) => /hevc|x265|h\.?265/i.test(c.title);
+  take(own.find((c) => bucket(c.height) === 1080 && !hevc(c)) ?? own.find((c) => bucket(c.height) === 1080) ?? own[0]);
 
   const other = matched.filter((c) => c.source !== 'anilibria' && c.seeders > 0);
   const covered = new Set(picked.flatMap((c) => c.studios));
@@ -176,8 +200,9 @@ export function pickCandidates(matched: Candidate[], limit = MAX_CANDIDATES): Ca
     while (picked.filter((c) => bucket(c.height) === height).length < 2 && fresh.length) take(fresh.shift());
   }
   // Остальные места — раздачам, где, похоже, больше озвучек (их видно, только когда раздачу откроешь).
+  // С одним раздающим раздача чаще всего не откроется — такие только ради редкой студии (выше).
   const rest = other
-    .filter((c) => !picked.includes(c))
+    .filter((c) => !picked.includes(c) && c.seeders > 1)
     .sort((a, b) => dubsGuess(b) - dubsGuess(a) || quality(b) - quality(a) || b.seeders - a.seeders);
   rest.forEach((c) => take(c));
   return picked;
@@ -200,32 +225,33 @@ export class TorrentSearch {
     const errors: string[] = [];
     const failed = new Set<FoundTorrent['source']>();
     const all: FoundTorrent[] = [];
-    const tasks: Promise<void>[] = [];
     const { anilibria } = this.options;
-    if (anilibria) {
-      tasks.push(
-        anilibria
+    const own = anilibria
+      ? anilibria
           .releaseTorrents(release.id)
           .then((list) => list.forEach((raw) => pushFound(all, fromAniLibria(raw as Raw, release))))
           .catch((error: unknown) => {
             errors.push(`AniLibria: ${messageOf(error)}`);
             failed.add('anilibria');
-          }),
-      );
-    }
-    for (const base of this.options.jackett) {
-      for (const query of searchQueries(release)) {
-        tasks.push(
-          this.jackett(base, query)
-            .then((list) => list.forEach((item) => pushFound(all, item)))
-            .catch((error: unknown) => {
-              errors.push(`${hostOf(base)}: ${messageOf(error)}`);
-              failed.add('jacred');
-            }),
-        );
+          })
+      : Promise.resolve();
+    // К трекерам — по одному запросу (на два сразу jac.red отвечает 429). Название в оригинале
+    // спрашиваем, только если по-русски подходящего нашлось мало (русские названия бывают разными).
+    const trackers = (async () => {
+      for (const base of this.options.jackett) {
+        for (const [i, query] of searchQueries(release).entries()) {
+          const enough = all.filter((item) => item.source === 'jacred' && !skipReason(item) && matchTorrent(target, item.facts!).ok).length >= 3;
+          if (i > 0 && enough) break;
+          try {
+            (await this.jackett(base, query)).forEach((item) => all.push(item));
+          } catch (error) {
+            errors.push(`${hostOf(base)}: ${messageOf(error)}`);
+            failed.add('jacred');
+          }
+        }
       }
-    }
-    await Promise.all(tasks);
+    })();
+    await Promise.all([own, trackers]);
 
     // Одна раздача бывает и у AniLibria, и на трекере (Jacred собирает и их трекер) — берём одну.
     const unique = new Map<string, FoundTorrent>();
@@ -235,31 +261,60 @@ export class TorrentSearch {
     }
     const matched: Candidate[] = [];
     const rejected: SearchReport['rejected'] = [];
+    const last = (seasons: number[]) => seasons.length === 0 || Math.max(...seasons) === target.season;
     for (const item of unique.values()) {
+      const base = { season: target.season, episodes: target.episodesTotal };
       if (item.source === 'anilibria') {
-        matched.push({ ...item, season: target.season, pack: false });
+        matched.push({ ...item, ...base, pack: false, lastSeason: true });
         continue;
       }
-      const match = matchTorrent(target, item.facts!);
-      if (match.ok) matched.push({ ...item, season: target.season, pack: match.pack });
+      const skip = skipReason(item);
+      const match = skip ? { ok: false, pack: false, reason: skip } : matchTorrent(target, item.facts!);
+      if (match.ok) matched.push({ ...item, ...base, pack: match.pack, lastSeason: last(item.facts!.seasons) });
       else rejected.push({ title: item.title, reason: match.reason ?? 'не подходит' });
     }
-    return { candidates: pickCandidates(matched), found: unique.size, matched: matched.length, errors: [...new Set(errors)], failed: [...failed], rejected };
+    return {
+      candidates: pickCandidates(matched),
+      matchedList: matched,
+      found: unique.size,
+      matched: matched.length,
+      errors: [...new Set(errors)],
+      failed: [...failed],
+      rejected,
+    };
   }
 
   private async jackett(base: string, query: string): Promise<FoundTorrent[]> {
     const url = `${base}/api/v2.0/indexers/all/results?apikey=${encodeURIComponent(this.options.apiKey)}&Query=${encodeURIComponent(query)}`;
-    const response = await (this.options.fetch ?? fetch)(url, {
-      headers: { accept: 'application/json', 'user-agent': this.options.userAgent },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new Error(`ответ ${response.status}`);
-    const body = await response.text();
-    if (body.length > MAX_RESPONSE) throw new Error('слишком большой ответ');
-    const data = JSON.parse(body) as Raw;
-    const results: unknown[] = Array.isArray(data?.Results) ? data.Results : Array.isArray(data) ? data : [];
-    return results.map((item) => fromJackett(item as Raw, hostOf(base))).filter((item): item is FoundTorrent => item !== null);
+    const interval = this.options.interval ?? 1500;
+    for (let attempt = 0; ; attempt++) {
+      const wait = (nextRequest.get(base) ?? 0) - Date.now();
+      nextRequest.set(base, Math.max(Date.now(), nextRequest.get(base) ?? 0) + interval);
+      if (wait > 0) await sleep(wait);
+      const response = await (this.options.fetch ?? fetch)(url, {
+        headers: { accept: 'application/json', 'user-agent': this.options.userAgent },
+        signal: AbortSignal.timeout(30_000),
+      });
+      // Много запросов — ждём, сколько попросили (или 3 и 6 секунд), и пробуем ещё раз.
+      if (response.status === 429 && attempt < 2) {
+        const asked = Number(response.headers.get('retry-after'));
+        await sleep(Number.isFinite(asked) && asked > 0 ? Math.min(asked, 20) * 1000 : (attempt + 1) * (this.options.retryDelay ?? 3000));
+        continue;
+      }
+      if (!response.ok) throw new Error(response.status === 429 ? 'слишком много запросов (429), повторю позже' : `ответ ${response.status}`);
+      const body = await response.text();
+      if (body.length > MAX_RESPONSE) throw new Error('слишком большой ответ');
+      const data = JSON.parse(body) as Raw;
+      const results: unknown[] = Array.isArray(data?.Results) ? data.Results : Array.isArray(data) ? data : [];
+      return results.map((item) => fromJackett(item as Raw, hostOf(base))).filter((item): item is FoundTorrent => item !== null);
+    }
   }
+}
+
+/** Что сохранить о выбранной раздаче (см. Store.replaceFoundTorrents). */
+export function foundInput(c: Candidate): FoundTorrentInput {
+  const { source, magnet, infoHash, title, seeders, size, season, pack, episodes, lastSeason } = c;
+  return { source, magnet, infoHash, title, seeders, size, season, pack, episodes, lastSeason };
 }
 
 function pushFound(all: FoundTorrent[], item: FoundTorrent | null): void {

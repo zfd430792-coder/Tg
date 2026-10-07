@@ -351,6 +351,8 @@ export async function buildServer(deps: HttpDeps) {
       const ordinal = Number(b.ordinal);
       const start = b.start === undefined ? 0 : Number(b.start);
       const previous = typeof b.previous === 'string' && /^[0-9a-f]{20}$/.test(b.previous) ? b.previous : null;
+      // Устройство зрителя не показывает HEVC — сервер перекодирует видео в H.264.
+      const transcode = b.transcode === true;
       if (
         !/^\d{1,9}:[ex]\d{1,4}$/.test(variant) ||
         !Number.isInteger(ordinal) ||
@@ -362,7 +364,7 @@ export async function buildServer(deps: HttpDeps) {
       ) {
         throw new HttpError(400, 'Неверный запрос');
       }
-      const state = torrents.play(variant, ordinal, Math.floor(start), previous);
+      const state = torrents.play(variant, ordinal, Math.floor(start), previous, transcode);
       if (state.status !== 'ready') return state;
       return {
         status: 'ready',

@@ -365,6 +365,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
       <TorrentPlayer
         key={`torrent:${entry.ordinal}`}
         variant={quality.variant.id}
+        convert={Boolean(quality.variant.convert)}
         qualities={qualities.map((q) => q.height)}
         quality={quality.height}
         onQuality={chooseQuality}
@@ -463,7 +464,7 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
                   key={q.height}
                   className={`chip ${q.height === quality?.height ? 'active' : ''}`}
                   onClick={() => q.height !== quality?.height && chooseQuality(q.height)}
-                  title={q.variant.transcode ? 'Это видео сервер перекодирует — готовится дольше' : undefined}
+                  title={q.variant.transcode ? 'Это видео сервер перекодирует в H.264 — готовится дольше' : undefined}
                 >
                   {heightName(q.height)}
                 </button>

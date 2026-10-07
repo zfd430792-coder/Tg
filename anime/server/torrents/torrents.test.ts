@@ -12,7 +12,7 @@ import { Store, type TorrentRow } from '../db.ts';
 import { episodeNumber, folderSeason, parseLayout } from './layout.ts';
 import { TorrentLibrary } from './library.ts';
 import { infoHashOf, publicTracker, safeMagnet } from './magnet.ts';
-import { type Candidate, fromAniLibria, fromJackett, pickCandidates, type SearchReport, TorrentSearch } from './search.ts';
+import { type Candidate, fromAniLibria, fromJackett, pickCandidates, type SearchReport, skipReason, TorrentSearch } from './search.ts';
 import { audioArgs, ffmpegArgs, type ProbeInfo, summarizeProbe, TorrentStreamer, videoArgs } from './streamer.ts';
 import { knownStudio, studiosIn } from './studios.ts';
 import { explicitSeasons, heightOf, matchTorrent, releaseTarget, searchQueries, titleFacts, yearsOf } from './titles.ts';
@@ -121,6 +121,16 @@ describe('разбор раздачи', () => {
     assert.deepEqual([folderSeason('Season 2'), folderSeason('[ТВ-3]'), folderSeason('S04'), folderSeason('[AniDub]')], [2, 3, 4, null]);
   });
 
+  test('сборник без папок, серии подряд: свой сезон — по числу серий тайтла', () => {
+    const files = Array.from({ length: 47 }, (_, i) => ({ path: `JJK [1-47]/JJK - ${String(i + 1).padStart(2, '0')}.mkv`, length: 100 }));
+    const first = parseLayout('JJK', files, { season: 1, episodes: 24 });
+    assert.deepEqual([first.episodes.length, first.episodes[0], first.episodes[23]], [24, { ordinal: 1, file: 0 }, { ordinal: 24, file: 23 }]);
+    const second = parseLayout('JJK', files, { season: 2, episodes: 23, lastSeason: true });
+    assert.deepEqual([second.episodes.length, second.episodes[0], second.episodes[22]], [23, { ordinal: 1, file: 24 }, { ordinal: 23, file: 46 }]);
+    assert.deepEqual(parseLayout('JJK', files, { season: 2, episodes: 23, lastSeason: false }).episodes, [], 'сезон из середины без папок не угадать');
+    assert.deepEqual(parseLayout('JJK', files, { season: 1 }).episodes, [], 'без числа серий тоже');
+  });
+
   test('info hash из magnet-ссылки, hex и base32; открытые трекеры в довесок', () => {
     assert.equal(infoHashOf('magnet:?xt=urn:btih:F23CA2F001AD41F15FB1417FBF67D10149B3BFEE&dn=x'), 'f23ca2f001ad41f15fb1417fbf67d10149b3bfee');
     assert.equal(infoHashOf('magnet:?xt=urn:btih:6I6KF4ABVVA7CX5RIF736Z6RAFE3HP7O'), 'f23ca2f001ad41f15fb1417fbf67d10149b3bfee');
@@ -165,6 +175,8 @@ describe('ffmpeg для браузера', () => {
     assert.deepEqual(videoArgs(probe({ codec: 'h264' }).video), ['-c:v', 'copy']);
     assert.deepEqual(videoArgs(probe({ codec: 'hevc', tenBit: true, height: 2160 }).video), ['-c:v', 'copy', '-tag:v', 'hvc1']);
     assert.ok(videoArgs(probe({ codec: 'h264', tenBit: true }).video).includes('libx264'));
+    assert.ok(videoArgs(probe({ codec: 'hevc', height: 2160 }).video, true).join(' ').includes('libx264 -preset veryfast'), 'HEVC для устройства без HEVC — в H.264');
+    assert.ok(videoArgs(probe({ codec: 'hevc', height: 2160 }).video, true).join(' ').includes('scale=-2:min(ih\\,1080)'), 'и не больше 1080p');
     assert.deepEqual(audioArgs({ codec: 'aac', channels: 2 }), ['-c:a', 'copy']);
     assert.deepEqual(audioArgs({ codec: 'flac', channels: 2 }), ['-c:a', 'aac', '-ac', '2', '-b:a', '192k']);
     assert.deepEqual(audioArgs({ codec: 'aac', channels: 6 }), ['-c:a', 'aac', '-ac', '2', '-b:a', '192k']);
@@ -294,12 +306,12 @@ describe('поиск раздач', () => {
       requests.push(url);
       return new Response(JSON.stringify(jacred));
     }) as unknown as typeof fetch;
-    const search = new TorrentSearch({ jackett: ['https://jac.test'], apiKey: '', userAgent: 'test', anilibria, fetch: fetchStub });
+    const search = new TorrentSearch({ jackett: ['https://jac.test'], apiKey: '', userAgent: 'test', anilibria, fetch: fetchStub, interval: 0 });
     assert.deepEqual(search.sources, ['AniLibria', 'jac.test']);
     const report = await search.find(jjk);
-    assert.deepEqual(requests.map((u) => new URL(u).searchParams.get('Query')).sort(), ['Jujutsu Kaisen', 'Магическая битва']);
+    assert.deepEqual(requests.map((u) => new URL(u).searchParams.get('Query')), ['Магическая битва'], 'по-русски нашлось достаточно — в оригинале не спрашиваем');
     assert.ok(requests.every((u) => u.startsWith('https://jac.test/api/v2.0/indexers/all/results?apikey=&Query=')));
-    assert.equal(report.found, 6, 'одинаковые раздачи из двух запросов — одна');
+    assert.equal(report.found, 6);
     assert.deepEqual(report.candidates.map((c) => c.infoHash), [hash(5), hash(1), hash(2)], 'AniLibria — лучшая 1080p; S2 не подходит, у 4K нет раздающих');
     assert.ok(report.candidates.every((c) => c.magnet.includes('&tr=')), 'с открытыми трекерами');
     assert.equal(report.rejected.find((r) => r.title.includes('ТВ-2'))?.reason, 'другое название или сезон');
@@ -308,10 +320,28 @@ describe('поиск раздач', () => {
 
   test('источник не ответил — ошибка в отчёте, остальные работают', async () => {
     const down = (async () => new Response('nope', { status: 502 })) as unknown as typeof fetch;
-    const report = await new TorrentSearch({ jackett: ['https://jac.test'], apiKey: 'k', userAgent: 'test', anilibria, fetch: down }).find(jjk);
+    const report = await new TorrentSearch({ jackett: ['https://jac.test'], apiKey: 'k', userAgent: 'test', anilibria, fetch: down, interval: 0 }).find(jjk);
     assert.deepEqual(report.errors, ['jac.test: ответ 502']);
     assert.deepEqual(report.failed, ['jacred']);
     assert.deepEqual(report.candidates.map((c) => c.infoHash), [hash(5)]);
+  });
+
+  test('«слишком много запросов» (429): ждём и повторяем, а не теряем трекеры', async () => {
+    let calls = 0;
+    const busyOnce = (async () => (++calls === 1 ? new Response('', { status: 429, headers: { 'retry-after': '0' } }) : new Response(JSON.stringify(jacred)))) as unknown as typeof fetch;
+    const report = await new TorrentSearch({ jackett: ['https://jac.test'], apiKey: '', userAgent: 'test', anilibria: null, fetch: busyOnce, interval: 0, retryDelay: 0 }).find(jjk);
+    assert.deepEqual(report.errors, []);
+    assert.equal(report.candidates.length, 2);
+    const busy = (async () => new Response('', { status: 429 })) as unknown as typeof fetch;
+    const failed = await new TorrentSearch({ jackett: ['https://jac.test'], apiKey: '', userAgent: 'test', anilibria: null, fetch: busy, interval: 0, retryDelay: 0 }).find(jjk);
+    assert.deepEqual(failed.errors, ['jac.test: слишком много запросов (429), повторю позже']);
+    assert.deepEqual(failed.failed, ['jacred']);
+  });
+
+  test('украинская раздача и raw не нужны', () => {
+    assert.equal(skipReason({ title: 'Магічна битва / Jujutsu Kaisen (сезон 1) (2020) WEBDL 720р', tracker: 'toloka, mazepa' }), 'украинская раздача');
+    assert.equal(skipReason({ title: 'Jujutsu Kaisen | Магическая битва [2020, TV, 24 + SP] WEBRip 720p raw', tracker: 'nnmclub' }), 'без перевода (raw)');
+    assert.equal(skipReason({ title: 'Магическая битва (1 сезон: 1-24 серии из 24) / Jujutsu Kaisen / 2020-2021 / ЛМ (SHIZA Project)', tracker: 'kinozal' }), null);
   });
 
   test('разбор ответов и выбор раздач', () => {
@@ -321,10 +351,10 @@ describe('поиск раздач', () => {
     const own = fromAniLibria({ hash: hash(7), quality: { value: '2160p' }, seeders: '3' }, jjk)!;
     assert.deepEqual([own.source, own.height, own.seeders, own.title], ['anilibria', 2160, 3, 'Магическая битва [AniLibria 2160p]']);
     const candidate = (n: number, height: number, seeders: number, voices: string[] = []): Candidate => ({
-      source: 'jacred', tracker: 't', title: `t${n}`, magnet: '', infoHash: hash(n), seeders, size: null, height, voices, studios: studiosIn(voices), facts: null, season: 1, pack: false,
+      source: 'jacred', tracker: 't', title: `t${n}`, magnet: '', infoHash: hash(n), seeders, size: null, height, voices, studios: studiosIn(voices), facts: null, season: 1, pack: false, episodes: null, lastSeason: true,
     });
     const picked = pickCandidates([candidate(1, 1080, 5), candidate(2, 1080, 50), candidate(3, 1080, 20), candidate(4, 1080, 1, ['a', 'b', 'c']), candidate(5, 2160, 9), candidate(6, 720, 0)]);
-    assert.deepEqual(picked.map((c) => c.title), ['t2', 't3', 't5', 't4', 't1'], 'по 2 самых живых на качество, потом где больше озвучек; без раздающих — нет');
+    assert.deepEqual(picked.map((c) => c.title), ['t2', 't3', 't5', 't1'], 'по 2 самых живых на качество, потом остальные; с одним раздающим и без раздающих — нет');
 
     // Популярные студии: сначала раздачи, где они есть, даже если раздающих меньше.
     const popular = pickCandidates(
@@ -338,6 +368,8 @@ describe('поиск раздач', () => {
       6,
     );
     assert.deepEqual(popular.map((c) => c.title), ['t12', 't13', 't11', 't14', 't31', 't30'], 'Dream Cast + AniDub, Studio Band, AniLibria, потом остальные');
+    const fromOwn = (n: number, title: string, seeders: number): Candidate => ({ ...candidate(n, 1080, seeders), source: 'anilibria', title });
+    assert.equal(pickCandidates([fromOwn(40, 'JJK [WEBRip 1080p][HEVC]', 50), fromOwn(41, 'JJK [WEBRip 1080p]', 20)])[0].title, 'JJK [WEBRip 1080p]', 'у AniLibria — H.264, его покажет любой браузер');
     assert.deepEqual(fromJackett({ Tracker: 'rutor', Title: 'Магическая битва (2020) WEB-DL 1080p | AniLibria, AniDub, Dream Cast', MagnetUri: `magnet:?xt=urn:btih:${hash(9)}` }, 'x')?.studios, ['AniLibria', 'AniDub', 'Dream Cast']);
     assert.ok(fromJackett({ Tracker: 'rutracker', Title: 'x', MagnetUri: `magnet:?xt=urn:btih:${hash(9)}` }, 'x')?.magnet.includes(encodeURIComponent('http://bt.t-ru.org/ann?magnet')), 'у RuTracker — его трекер');
   });
@@ -403,6 +435,11 @@ describe('плеер «Торрент» из нескольких раздач',
     assert.equal(torrentSource([], 'searching')?.status, 'searching');
   });
 
+  test('«Дубляж» без студии — отдельная озвучка «Дубляж»', () => {
+    const dub: TorrentInfo = { name: 'D', height: 1080, videoCodec: 'h264', tenBit: false, embedded: [{ index: 0, title: 'Дубляж', language: 'rus' }, { index: 1, title: 'Rus', language: 'rus' }], layout: { name: 'D', episodes: [{ ordinal: 1, file: 0 }], external: [] } };
+    assert.deepEqual(torrentSource([{ row: row(5, 1), info: dub }], null)!.dubs.map((d) => [d.id, d.title]), [['torrent:dubbing', 'Дубляж'], ['torrent:t5e1', 'Русская озвучка']]);
+  });
+
   test('студия из подписи дорожки', () => {
     assert.deepEqual([studioOf('MVO | AniLibria.TV'), studioOf('Rus | MVO'), studioOf('Русский (AniDub)'), studioOf('AC3 5.1'), studioOf(null)], ['AniLibria.TV', null, 'AniDub', null, null]);
     assert.equal(studioKey('AniLibria.TV'), studioKey('AniLibria'));
@@ -444,7 +481,7 @@ describe('раздачи в базе', () => {
       ['t3', 'pending'],
       ['t4', 'pending'],
     ], 'готовая осталась готовой, не открывшаяся — в очередь снова, AniLibria не ответила — её раздача осталась');
-    assert.deepEqual(rows[1].hint, { season: 1, pack: false });
+    assert.deepEqual(rows[1].hint, { season: 1, pack: false, episodes: null, lastSeason: true });
 
     store.replaceFoundTorrents(1, [found(4)], [], new Set([found(2).infoHash]));
     assert.deepEqual(store.torrents({ releaseId: 1 }).map((r) => r.title ?? 'своя'), ['своя', 't2', 't4'], 'раздачу, которую смотрят, не убираем');
@@ -527,7 +564,8 @@ describe('серия из раздачи', { skip: !hasFfmpeg && 'нет ffmpeg'
     const search = {
       sources: ['test'],
       find: async (): Promise<SearchReport> => ({
-        candidates: seeded.map((s, i) => ({ source: 'jacred', tracker: 'test', title: s.title, magnet: s.magnet, infoHash: s.infoHash, seeders: 10 - i, size: null, height: null, voices: [], studios: [], facts: null, season: 1, pack: false })),
+        candidates: seeded.map((s, i) => ({ source: 'jacred', tracker: 'test', title: s.title, magnet: s.magnet, infoHash: s.infoHash, seeders: 10 - i, size: null, height: null, voices: [], studios: [], facts: null, season: 1, pack: false, episodes: 1, lastSeason: true })),
+        matchedList: [],
         found: seeded.length,
         matched: seeded.length,
         errors: [],
@@ -606,6 +644,17 @@ describe('серия из раздачи', { skip: !hasFfmpeg && 'нет ffmpeg'
       const playlist = (await library.playlist(later.session)) ?? '';
       const total = [...playlist.matchAll(/#EXTINF:([\d.]+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
       assert.ok(total > 0 && total <= 12 - 6 + 2, `с середины — только остаток серии (${total} с)`);
+    }
+    // Устройство без HEVC: то же видео сервер перекодирует в H.264 — это другая подготовка.
+    let converted = library.play(from.id, 1, 0, null, true);
+    for (let i = 0; i < 150 && converted.status === 'starting'; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      converted = library.play(from.id, 1, 0, null, true);
+    }
+    assert.equal(converted.status, 'ready', JSON.stringify(converted));
+    if (converted.status === 'ready' && previous.status === 'ready') {
+      assert.notEqual(converted.session, previous.session);
+      assert.equal(converted.codec, 'h264');
     }
     previous = library.play('999:e0', 1);
     assert.equal(previous.status, 'error');

@@ -51,6 +51,8 @@ export interface PlayRequest {
   start?: number;
   /** Сессия, которую зритель только что бросил (сменил озвучку, качество, перемотал). */
   previous?: string | null;
+  /** Перекодировать в H.264 даже HEVC: устройство зрителя HEVC не показывает. */
+  transcode?: boolean;
 }
 
 export type SessionState =
@@ -94,12 +96,14 @@ const TORRENT_IDLE = 10 * 60_000;
 const METADATA_TIMEOUT = 150_000;
 const READY_TIMEOUT = 3 * 60_000;
 
-/** Решение по видео: копировать как есть или перекодировать (браузер такой кодек не покажет). */
-export function videoArgs(video: ProbeInfo['video']): string[] {
+/**
+ * Решение по видео: копировать как есть или перекодировать. H.264 10-bit (Hi10P) и редкие
+ * кодеки браузеры не играют вовсе, HEVC — не все (force): такое перекодируем в H.264, не выше 1080p.
+ */
+export function videoArgs(video: ProbeInfo['video'], force = false): string[] {
   if (!video) return [];
-  if (video.codec === 'hevc') return ['-c:v', 'copy', '-tag:v', 'hvc1'];
-  if ((video.codec === 'h264' && !video.tenBit) || video.codec === 'av1') return ['-c:v', 'copy'];
-  // H.264 10-bit (Hi10P) и редкие кодеки браузеры не играют: перекодируем, не выше 1080p.
+  if (!force && video.codec === 'hevc') return ['-c:v', 'copy', '-tag:v', 'hvc1'];
+  if (!force && ((video.codec === 'h264' && !video.tenBit) || video.codec === 'av1')) return ['-c:v', 'copy'];
   return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p', '-vf', 'scale=-2:min(ih\\,1080)'];
 }
 
@@ -113,7 +117,15 @@ export function audioArgs(audio: { codec: string; channels: number } | undefined
  * Команда ffmpeg: видео из раздачи + выбранная озвучка → HLS (fMP4) в папку out. start —
  * с какой секунды: ffmpeg прыгает к ближайшему ключевому кадру, качать начало серии не нужно.
  */
-export function ffmpegArgs(input: { video: string; audio: string | null }, choice: AudioChoice, video: ProbeInfo, audioProbe: ProbeInfo | null, out: string, start = 0): string[] {
+export function ffmpegArgs(
+  input: { video: string; audio: string | null },
+  choice: AudioChoice,
+  video: ProbeInfo,
+  audioProbe: ProbeInfo | null,
+  out: string,
+  start = 0,
+  transcode = false,
+): string[] {
   const seek = start > 0 ? ['-ss', String(start)] : [];
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', ...seek, '-i', input.video];
   let audio: ProbeInfo['audio'][number] | undefined;
@@ -126,7 +138,7 @@ export function ffmpegArgs(input: { video: string; audio: string | null }, choic
     audio = video.audio.find((a) => a.index === index) ?? video.audio[0];
     args.push('-map', '0:v:0', '-map', `0:a:${audio?.index ?? 0}?`);
   }
-  args.push(...videoArgs(video.video), ...audioArgs(audio));
+  args.push(...videoArgs(video.video, transcode), ...audioArgs(audio));
   args.push(
     '-sn',
     '-dn',
@@ -268,7 +280,7 @@ export class TorrentStreamer {
   play(request: PlayRequest): SessionState {
     const audioKey = request.audio.kind === 'embedded' ? `e${request.audio.index}` : `x${request.audio.file}`;
     const start = Math.max(0, Math.floor(request.start ?? 0));
-    const id = createHash('sha1').update(`${request.infoHash}:${request.video}:${audioKey}:${start}`).digest('hex').slice(0, 20);
+    const id = createHash('sha1').update(`${request.infoHash}:${request.video}:${audioKey}:${start}${request.transcode ? ':h264' : ''}`).digest('hex').slice(0, 20);
     if (request.previous && request.previous !== id) {
       const previous = this.sessions.get(request.previous);
       if (previous) previous.released = true;
@@ -359,7 +371,7 @@ export class TorrentStreamer {
       if ((await this.freeSpace()) < MIN_FREE) throw new Error('На сервере мало места на диске — серию сейчас не подготовить');
     }
     // Перекодирование (H.264 10 бит) тяжёлое: одновременно — только одно. Брошенные уступают.
-    if (videoArgs(video.video).includes('libx264')) {
+    if (videoArgs(video.video, request.transcode).includes('libx264')) {
       const heavy = () => [...this.sessions.values()].filter((s) => s !== session && s.transcode && s.proc !== null);
       for (const other of heavy()) if (this.abandoned(other)) this.stopSession(other);
       if (heavy().length >= MAX_TRANSCODES) {
@@ -381,6 +393,7 @@ export class TorrentStreamer {
       audioProbe,
       session.dir,
       start,
+      request.transcode,
     );
     session.state = { status: 'starting', message: 'Готовлю видео…', ...this.stats(request.infoHash) };
     const proc = spawn(this.options.ffmpeg ?? 'ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -401,7 +414,7 @@ export class TorrentStreamer {
       const text = await readFile(playlist, 'utf8').catch(() => '');
       if (text.includes('#EXTINF')) {
         // Видео, которое перекодировали, — H.264; скопированное — в своём кодеке (HEVC, AV1…).
-        const codec = videoArgs(video.video).includes('libx264') ? 'h264' : video.video.codec;
+        const codec = session.transcode ? 'h264' : video.video.codec;
         const height = session.transcode && video.video.height ? Math.min(video.video.height, 1080) : video.video.height;
         session.state = { status: 'ready', session: session.id, duration: video.duration, height, codec, offset: start };
         return;

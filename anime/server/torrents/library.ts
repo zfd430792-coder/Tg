@@ -6,7 +6,7 @@
 import type { PlayerSource, Release } from '../../shared/types.ts';
 import type { Store, TorrentRow } from '../db.ts';
 import { parseLayout } from './layout.ts';
-import type { SearchReport, TorrentSearch } from './search.ts';
+import { foundInput, type SearchReport, type TorrentSearch } from './search.ts';
 import type { AudioChoice, SessionState, TorrentStreamer } from './streamer.ts';
 import { parseVariant, type TorrentInfo, torrentSource } from './variants.ts';
 
@@ -22,8 +22,8 @@ export interface TorrentLibraryOptions {
 
 /** Как часто искать раздачи заново: у онгоингов выходят серии, у вышедших — новые рипы. */
 const SEARCH_AGAIN = { ongoing: 12 * 3600_000, finished: 3 * 86400_000, failed: 30 * 60_000, empty: 86400_000 };
-/** Сколько раздач разбирать одновременно и сколько тайтлов искать одновременно. */
-const RESOLVE_AT_ONCE = 2;
+/** Сколько раздач разбирать одновременно (это ожидание раздающих, а не работа процессора) и сколько тайтлов искать. */
+const RESOLVE_AT_ONCE = 5;
 const SEARCH_AT_ONCE = 2;
 /** Не больше стольких разборов в час: каждый — подключение к раздаче и пара мегабайт начала серии. */
 const RESOLVES_PER_HOUR = 60;
@@ -36,6 +36,8 @@ export class TorrentLibrary {
   private searchQueue: (() => void)[] = [];
   private activeSearches = 0;
   private resolvedAt: number[] = [];
+  /** Когда тайтл последний раз открывали: его раздачи разбираем раньше остальных. */
+  private wanted = new Map<number, number>();
   private logged = new Map<string, number>();
 
   constructor(options: TorrentLibraryOptions) {
@@ -55,7 +57,11 @@ export class TorrentLibrary {
 
   /** Плеер «Торрент» для тайтла (если раздачи есть или ещё ищутся); search — поискать, если давно не искали. */
   players(release: Release, options: { search?: boolean } = {}): PlayerSource[] {
-    if (options.search) this.ensureSearch(release);
+    if (options.search) {
+      this.wanted.set(release.id, Date.now());
+      if (this.wanted.size > 1000) this.wanted.delete(this.wanted.keys().next().value as number);
+      this.ensureSearch(release);
+    }
     const rows = this.options.store.torrents({ releaseId: release.id });
     const ready = rows.filter((row) => row.status === 'ready' && row.info).map((row) => ({ row, info: row.info as TorrentInfo }));
     const busy = this.searching.has(release.id) || rows.some((row) => row.status === 'pending');
@@ -72,7 +78,7 @@ export class TorrentLibrary {
    * Серия для плеера: вариант «<раздача>:e<дорожка>» или «<раздача>:x<папка озвучки>».
    * start — с какой секунды (перемотка, смена озвучки), previous — сессия, которую бросили.
    */
-  play(variantId: string, ordinal: number, start = 0, previous: string | null = null): SessionState {
+  play(variantId: string, ordinal: number, start = 0, previous: string | null = null, transcode = false): SessionState {
     const variant = parseVariant(variantId);
     const row = variant ? this.options.store.torrent(variant.row) : null;
     const info = row?.status === 'ready' ? (row.info as TorrentInfo | null) : null;
@@ -87,7 +93,7 @@ export class TorrentLibrary {
       if (file === undefined) return { status: 'error', message: `В озвучке «${external?.title ?? ''}» ${ordinal}-й серии нет` };
       audio = { kind: 'external', file };
     }
-    return this.options.streamer.play({ magnet: row.magnet, infoHash: row.infoHash, video: episode.file, audio, start, previous });
+    return this.options.streamer.play({ magnet: row.magnet, infoHash: row.infoHash, video: episode.file, audio, start, previous, transcode });
   }
 
   playlist(session: string): Promise<string | null> {
@@ -122,7 +128,7 @@ export class TorrentLibrary {
         if (report.candidates.length > 0 || report.failed.length === 0) {
           store.replaceFoundTorrents(
             release.id,
-            report.candidates.map((c) => ({ source: c.source, magnet: c.magnet, infoHash: c.infoHash, title: c.title, seeders: c.seeders, size: c.size, season: c.season, pack: c.pack })),
+            report.candidates.map(foundInput),
             report.failed,
             // Раздачу, которую сейчас смотрят, не убираем, даже если поиск её больше не нашёл.
             this.options.streamer.activeHashes(),
@@ -170,12 +176,17 @@ export class TorrentLibrary {
     });
   }
 
-  /** Разобрать раздачи из очереди: сначала найденные последними (их ждёт зритель), по RESOLVE_AT_ONCE за раз. */
+  /**
+   * Разобрать раздачи из очереди, по RESOLVE_AT_ONCE за раз: сначала тайтла, который открыли
+   * последним (его ждёт зритель), а у тайтла — в порядке поиска (популярные студии первыми).
+   */
   private kick(): void {
     if (this.resolving.size >= RESOLVE_AT_ONCE) return;
     const hourAgo = Date.now() - 3600_000;
     this.resolvedAt = this.resolvedAt.filter((at) => at > hourAgo);
-    for (const row of this.options.store.torrents({ status: 'pending' }).reverse()) {
+    const pending = this.options.store.torrents({ status: 'pending' });
+    pending.sort((a, b) => (this.wanted.get(b.releaseId) ?? 0) - (this.wanted.get(a.releaseId) ?? 0) || a.id - b.id);
+    for (const row of pending) {
       if (this.resolving.size >= RESOLVE_AT_ONCE || this.resolvedAt.length >= RESOLVES_PER_HOUR) break;
       if (this.resolving.has(row.id)) continue;
       this.resolving.add(row.id);
@@ -192,7 +203,8 @@ export class TorrentLibrary {
     const { store, streamer, log } = this.options;
     try {
       const meta = await streamer.metadata(row.magnet, row.infoHash);
-      const layout = parseLayout(meta.name, meta.files, { season: row.hint?.pack ? row.hint.season : null });
+      const hint = row.hint?.pack ? row.hint : null;
+      const layout = parseLayout(meta.name, meta.files, { season: hint?.season ?? null, episodes: hint?.episodes ?? null, lastSeason: hint?.lastSeason ?? true });
       if (layout.episodes.length === 0) throw new Error(row.hint?.pack ? `В сборнике нет папки ${row.hint.season}-го сезона` : 'В раздаче не нашлось видеофайлов серий');
       const probe = await streamer.probe(row.magnet, row.infoHash, layout.episodes[0].file);
       if (!probe.video) throw new Error('В первой серии нет видео');

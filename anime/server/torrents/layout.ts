@@ -89,6 +89,12 @@ function fileSeason(filePath: string): number | null {
 export interface LayoutOptions {
   /** Сборник сезонов: брать только папку этого сезона. */
   season?: number | null;
+  /**
+   * Сборник без папок, серии подряд («1-2 сезоны: 1-47 серии»): сколько серий в тайтле и
+   * последний ли это сезон сборника. 1-й сезон — первые N серий, последний — последние N.
+   */
+  episodes?: number | null;
+  lastSeason?: boolean;
 }
 
 /** Серии и внешние озвучки раздачи. Один видеофайл — фильм или одна серия (номер 1). */
@@ -96,6 +102,7 @@ export function parseLayout(name: string, files: TorrentFileInfo[], options: Lay
   let videos = files.map((f, index) => ({ ...f, index })).filter((f) => VIDEO.test(f.path) && !/(^|\/)(sample|trailer|ncop|nced|pv)[^/]*$/i.test(f.path));
   // Сборник сезонов — по папке на сезон. Берём свой, а нумерацию «25…48» (сквозную) — с единицы.
   let offset = 0;
+  let upTo = Number.POSITIVE_INFINITY;
   if (options.season !== undefined && options.season !== null) {
     const seasons = new Set(videos.map((v) => fileSeason(v.path)));
     if (seasons.size > 1 || !seasons.has(null)) {
@@ -103,6 +110,13 @@ export function parseLayout(name: string, files: TorrentFileInfo[], options: Lay
       const numbers = videos.map((v) => episodeNumber(v.path)).filter((n): n is number => n !== null && n > 0);
       const first = numbers.length ? Math.min(...numbers) : 1;
       if (first > 1 && numbers.length > 1 && Math.max(...numbers) - first + 1 === new Set(numbers).size) offset = first - 1;
+    } else {
+      // Папок нет, серии подряд: свой сезон узнаём по числу серий тайтла.
+      const numbers = videos.map((v) => episodeNumber(v.path)).filter((n): n is number => n !== null && n > 0);
+      const count = options.episodes ?? 0;
+      if (count > 0 && options.season === 1) upTo = count;
+      else if (count > 0 && options.lastSeason && numbers.length) offset = Math.max(...numbers) - count;
+      else videos = [];
     }
   }
   const audioAllowed = (filePath: string) => options.season === undefined || options.season === null || (fileSeason(filePath) ?? options.season) === options.season;
@@ -113,7 +127,7 @@ export function parseLayout(name: string, files: TorrentFileInfo[], options: Lay
     for (const video of videos) {
       const number = episodeNumber(video.path);
       const ordinal = number === null ? null : number - offset;
-      if (ordinal === null || ordinal <= 0 || ordinal > 3000) continue;
+      if (ordinal === null || ordinal <= 0 || ordinal > Math.min(3000, upTo)) continue;
       // Две версии одной серии — берём большую (обычно это основная, а не сэмпл).
       const current = byOrdinal.get(ordinal);
       if (!current || files[current.file].length < video.length) byOrdinal.set(ordinal, { ordinal, file: video.index });

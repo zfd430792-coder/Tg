@@ -14,7 +14,7 @@ import { config } from './config.ts';
 import { Store, type TorrentRow } from './db.ts';
 import { HostRegistry } from './media.ts';
 import { infoHashOf } from './torrents/magnet.ts';
-import { TorrentSearch } from './torrents/search.ts';
+import { foundInput, TorrentSearch } from './torrents/search.ts';
 import { type TorrentInfo, torrentSource } from './torrents/variants.ts';
 
 function describe(row: TorrentRow): string {
@@ -78,19 +78,19 @@ async function main(args: string[]): Promise<number> {
       const report = await search.find(release);
       for (const error of report.errors) console.log(`✗ ${error}`);
       console.log(`Найдено раздач: ${report.found}, подошло тайтлу: ${report.matched}, разберу: ${report.candidates.length}`);
-      for (const c of report.candidates) {
+      const line = (mark: string, c: (typeof report.candidates)[number]) => {
         const studios = c.studios.length ? ` · ${c.studios.join(', ')}` : '';
-        console.log(`  + [${c.tracker}] ${c.title} · раздающих ${c.seeders}${studios}${c.pack ? ' · сборник сезонов' : ''}`);
-      }
+        console.log(`  ${mark} [${c.tracker}] ${c.title} · раздающих ${c.seeders}${studios}${c.pack ? ' · сборник сезонов' : ''}`);
+      };
+      for (const c of report.candidates) line('+', c);
+      const skipped = report.matchedList.filter((c) => !report.candidates.includes(c));
+      if (skipped.length) console.log('Подошли, но разбирать не стал (хватает других):');
+      for (const c of skipped) line('·', c);
       const rejected = report.rejected.slice(0, 15);
       if (rejected.length) console.log('Не подошли (первые 15):');
       for (const r of rejected) console.log(`  − ${r.title} — ${r.reason}`);
       if (report.candidates.length > 0 || report.failed.length === 0) {
-        store.replaceFoundTorrents(
-          release.id,
-          report.candidates.map((c) => ({ source: c.source, magnet: c.magnet, infoHash: c.infoHash, title: c.title, seeders: c.seeders, size: c.size, season: c.season, pack: c.pack })),
-          report.failed,
-        );
+        store.replaceFoundTorrents(release.id, report.candidates.map(foundInput), report.failed);
       }
       store.saveTorrentSearch(release.id, report.candidates.length, report.errors.join('; ') || null);
       if (report.candidates.length) console.log('Сервер разберёт их за пару минут: animini torrent list ' + (release.alias || release.id));

@@ -13,6 +13,8 @@ const Player = lazy(() => import('./player.tsx'));
 export interface TorrentPlayerProps extends Omit<PlayerProps, 'episode' | 'torrent'> {
   /** Вариант: раздача и дорожка в ней («<раздача>:e<дорожка>» или «:x<папка озвучки>»). */
   variant: string;
+  /** Браузер не покажет кодек этой раздачи (HEVC) — сервер перекодирует видео в H.264. */
+  convert: boolean;
   ordinal: number;
   /** Качества этой озвучки (каждое — своя раздача) и выбранное. */
   qualities: number[];
@@ -30,6 +32,7 @@ function speedLabel(bytes: number): string {
 
 interface Request {
   variant: string;
+  convert: boolean;
   /** С какой секунды серии сервер готовит видео. */
   start: number;
   /** С какой секунды включить. */
@@ -37,8 +40,8 @@ interface Request {
 }
 
 export default function TorrentPlayer(props: TorrentPlayerProps) {
-  const { variant, ordinal } = props;
-  const [request, setRequest] = useState<Request>(() => ({ variant, start: startOf(props.startAt), at: props.startAt }));
+  const { variant, convert, ordinal } = props;
+  const [request, setRequest] = useState<Request>(() => ({ variant, convert, start: startOf(props.startAt), at: props.startAt }));
   const [state, setState] = useState<TorrentPlayState | null>(null);
   const [attempt, setAttempt] = useState(0);
   /** Где смотрят сейчас (секунда серии) и какую подготовку смотрят — её сервер может отпустить. */
@@ -47,9 +50,9 @@ export default function TorrentPlayer(props: TorrentPlayerProps) {
 
   // Озвучку или качество сменили — тот же момент серии, но из другой раздачи или с другой дорожкой.
   useEffect(() => {
-    if (variant === request.variant) return;
-    setRequest({ variant, start: startOf(position.current), at: position.current });
-  }, [variant, request.variant]);
+    if (variant === request.variant && convert === request.convert) return;
+    setRequest({ variant, convert, start: startOf(position.current), at: position.current });
+  }, [variant, convert, request.variant, request.convert]);
 
   useEffect(() => {
     let stopped = false;
@@ -58,7 +61,7 @@ export default function TorrentPlayer(props: TorrentPlayerProps) {
     setState(null);
     const ask = async () => {
       try {
-        const body = { variant: request.variant, ordinal, start: request.start, previous: session.current };
+        const body = { variant: request.variant, ordinal, start: request.start, previous: session.current, transcode: request.convert };
         const next = await api<TorrentPlayState>('/api/torrent/play', { method: 'POST', body: JSON.stringify(body) });
         if (stopped) return;
         if (next.status === 'ready') session.current = next.session;
@@ -83,7 +86,7 @@ export default function TorrentPlayer(props: TorrentPlayerProps) {
   // Перемотали туда, где видео ещё нет (или назад, до начала подготовленного куска).
   const seekOutside = useCallback((time: number) => {
     position.current = time;
-    setRequest((current) => ({ variant: current.variant, start: startOf(time), at: time }));
+    setRequest((current) => ({ ...current, start: startOf(time), at: time }));
   }, []);
 
   if (state?.status === 'ready' && !canPlayCodec(state.codec)) {

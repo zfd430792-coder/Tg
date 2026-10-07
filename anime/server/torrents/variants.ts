@@ -78,7 +78,10 @@ function studioTrack(label: string | null, fallbackKey: string): Track | null {
   const known = label ? knownStudio(label) : null;
   if (known) return { key: studioKey(known.name), title: known.name, original: false, order: known.order };
   const studio = studioOf(label);
-  return studio ? { key: studioKey(studio) || fallbackKey, title: studio, original: false, order: UNKNOWN } : null;
+  if (studio) return { key: studioKey(studio) || fallbackKey, title: studio, original: false, order: UNKNOWN };
+  // «Дубляж» без студии — официальный полный дубляж, а не безымянная закадровая озвучка.
+  if (label && /дубляж|dubbing|(?:^|[^a-z])dub(?:[^a-z]|$)/i.test(label)) return { key: 'dubbing', title: 'Дубляж', original: false, order: UNKNOWN - 1 };
+  return null;
 }
 
 function embeddedTrack(rowId: number, track: TorrentInfo['embedded'][number]): Track {

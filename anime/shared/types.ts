@@ -121,6 +121,8 @@ export interface TorrentVariant {
   transcode: boolean;
   episodes: number[];
   seeders: number;
+  /** Только на странице: браузер такой кодек (HEVC) не покажет — сервер перекодирует видео в H.264. */
+  convert?: boolean;
 }
 
 /** Состояние серии из торрент-раздачи: пока готовится — статус, потом адрес плейлиста. */
