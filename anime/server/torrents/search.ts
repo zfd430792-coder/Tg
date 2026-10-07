@@ -6,7 +6,8 @@
 // раздающих — по паре на каждое качество.
 
 import type { Release } from '../../shared/types.ts';
-import { infoHashOf, safeMagnet } from './magnet.ts';
+import { infoHashOf, OPEN_TRACKERS, safeMagnet } from './magnet.ts';
+import { studioOrder, studiosIn } from './studios.ts';
 import { heightOf, type JacredInfo, matchTorrent, releaseTarget, searchQueries, type TitleFacts, titleFacts } from './titles.ts';
 
 export interface FoundTorrent {
@@ -22,6 +23,8 @@ export interface FoundTorrent {
   height: number | null;
   /** Озвучки, если трекер их перечислил. */
   voices: string[];
+  /** Известные студии в раздаче (по списку озвучек и названию): Dream Cast, AniDub… */
+  studios: string[];
   facts: TitleFacts | null;
 }
 
@@ -57,7 +60,9 @@ type Raw = Record<string, any>;
 
 const MAX_RESPONSE = 15 * 1024 * 1024;
 /** Сколько раздач тайтла разбирать: каждую серверу нужно открыть, чтобы узнать озвучки. */
-const MAX_CANDIDATES = 8;
+const MAX_CANDIDATES = 10;
+/** Трекер RuTracker для magnet-ссылок (без passkey): с ним раздающие находятся быстрее, чем только через DHT. */
+const RUTRACKER_TRACKERS = ['http://bt.t-ru.org/ann?magnet', 'http://bt2.t-ru.org/ann?magnet', 'http://bt3.t-ru.org/ann?magnet', 'http://bt4.t-ru.org/ann?magnet'];
 
 function text(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() || null;
@@ -74,16 +79,20 @@ export function fromJackett(item: Raw, host: string): FoundTorrent | null {
   const info: JacredInfo | null = item?.info && typeof item.info === 'object' ? item.info : null;
   const voices = Array.isArray((info as Raw | null)?.voices) ? ((info as Raw).voices as unknown[]).map(text).filter((v): v is string => Boolean(v)) : [];
   const facts = titleFacts(title, info);
+  const tracker = text(item?.Tracker) ?? text(item?.TrackerId) ?? host;
+  const trackers = /rutracker/i.test(tracker) ? [...RUTRACKER_TRACKERS, ...OPEN_TRACKERS] : OPEN_TRACKERS;
   return {
     source: 'jacred',
-    tracker: text(item?.Tracker) ?? text(item?.TrackerId) ?? host,
+    tracker,
     title,
-    magnet: safeMagnet(link ?? infoHash)!,
+    magnet: safeMagnet(link ?? infoHash, trackers)!,
     infoHash,
     seeders: Math.max(0, Number(item?.Seeders) || 0),
     size: Number(item?.Size) > 0 ? Number(item.Size) : null,
     height: facts.height,
     voices,
+    // Rutor пишет озвучки в названии: «… | AniLibria, AniDub, Dream Cast».
+    studios: studiosIn([...voices, ...title.split(/\s\|\s/).slice(1)]),
     facts,
   };
 }
@@ -107,6 +116,7 @@ export function fromAniLibria(raw: Raw, release: Pick<Release, 'title'>): FoundT
     size: Number(raw?.size) > 0 ? Number(raw.size) : null,
     height: heightOf(`${quality ?? ''} ${label ?? ''}`) ?? (Number.parseInt(quality ?? '', 10) || null),
     voices: ['AniLibria'],
+    studios: ['AniLibria'],
     facts: null,
   };
 }
@@ -119,10 +129,19 @@ function bucket(height: number | null): number {
   return 480;
 }
 
+/** Сколько озвучек, похоже, в раздаче: перечисленные трекером, а «RUS(ext)» на RuTracker — обычно несколько. */
+function dubsGuess(c: Candidate): number {
+  if (c.voices.length) return c.voices.length;
+  if (/rus\s*\(ext\)/i.test(c.title)) return 3;
+  return /rus\s*\(int\)/i.test(c.title) ? 1 : 0;
+}
+
 /**
- * Какие раздачи разбирать: у AniLibria — одну, лучшую в 1080p (их озвучка есть и в плеере
- * AniLibria), с трекеров — по две с наибольшим числом раздающих на каждое качество и ещё
- * одну, где больше всего озвучек.
+ * Какие раздачи разбирать (каждую сервер открывает, чтобы узнать озвучки):
+ *   1. у AniLibria — одну, лучшую в 1080p (их озвучка есть и в плеере AniLibria);
+ *   2. раздачи с популярными студиями (Dream Cast, AniDub, Studio Band…), которых ещё нет
+ *      в выбранных, — сначала самые популярные студии, из раздач — в 1080p и живее;
+ *   3. по две самых живых на каждое качество и ещё одну, где больше всего озвучек.
  */
 export function pickCandidates(matched: Candidate[], limit = MAX_CANDIDATES): Candidate[] {
   const picked: Candidate[] = [];
@@ -133,12 +152,34 @@ export function pickCandidates(matched: Candidate[], limit = MAX_CANDIDATES): Ca
   take(own.find((c) => bucket(c.height) === 1080) ?? own[0]);
 
   const other = matched.filter((c) => c.source !== 'anilibria' && c.seeders > 0);
-  for (const height of [1080, 2160, 720, 480, 0]) {
-    const group = other.filter((c) => bucket(c.height) === height).sort(bySeeders);
-    take(group[0]);
-    take(group[1]);
-    take([...group].sort((a, b) => b.voices.length - a.voices.length || b.seeders - a.seeders)[0]);
+  const covered = new Set(picked.flatMap((c) => c.studios));
+  const quality = (c: Candidate) => ({ 1080: 3, 2160: 2, 720: 2, 480: 1, 0: 1 })[bucket(c.height)] ?? 1;
+  // Оставляем пару мест на разные качества.
+  while (picked.length < limit - 2) {
+    let best: Candidate | null = null;
+    let bestScore = 0;
+    for (const c of other) {
+      if (picked.includes(c)) continue;
+      const fresh = c.studios.filter((studio) => !covered.has(studio));
+      if (fresh.length === 0) continue;
+      const score = fresh.reduce((sum, studio) => sum + (100 - studioOrder(studio)), 0) * 1000 + quality(c) * 100 + Math.min(c.seeders, 99);
+      if (score > bestScore) [best, bestScore] = [c, score];
+    }
+    if (!best) break;
+    take(best);
+    best.studios.forEach((studio) => covered.add(studio));
   }
+
+  // На каждое качество — хотя бы по две (самые живые).
+  for (const height of [1080, 2160, 720, 480, 0]) {
+    const fresh = other.filter((c) => bucket(c.height) === height && !picked.includes(c)).sort(bySeeders);
+    while (picked.filter((c) => bucket(c.height) === height).length < 2 && fresh.length) take(fresh.shift());
+  }
+  // Остальные места — раздачам, где, похоже, больше озвучек (их видно, только когда раздачу откроешь).
+  const rest = other
+    .filter((c) => !picked.includes(c))
+    .sort((a, b) => dubsGuess(b) - dubsGuess(a) || quality(b) - quality(a) || b.seeders - a.seeders);
+  rest.forEach((c) => take(c));
   return picked;
 }
 

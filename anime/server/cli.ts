@@ -15,15 +15,16 @@ import { Store, type TorrentRow } from './db.ts';
 import { HostRegistry } from './media.ts';
 import { infoHashOf } from './torrents/magnet.ts';
 import { TorrentSearch } from './torrents/search.ts';
-import type { TorrentInfo } from './torrents/variants.ts';
+import { type TorrentInfo, torrentSource } from './torrents/variants.ts';
 
 function describe(row: TorrentRow): string {
   const info = row.info as TorrentInfo | null;
   if (row.status === 'pending') return 'разбирается…';
   if (row.status === 'error') return `не открылась: ${row.error}`;
   const episodes = info?.layout?.episodes.length ?? 0;
-  const dubs = (info?.embedded?.length ?? 0) + (info?.layout?.external.length ?? 0);
-  return `серий ${episodes}, дорожек ${dubs}${info?.height ? `, ${info.height}p ${info.videoCodec ?? ''}` : ''}`;
+  // Озвучки так, как их покажет плеер: «Dream Cast, AniDub, Японская (оригинал)».
+  const dubs = row.info ? (torrentSource([{ row, info: row.info as TorrentInfo }], null)?.dubs.map((d) => d.title) ?? []) : [];
+  return `серий ${episodes}${info?.height ? `, ${info.height}p ${info.videoCodec ?? ''}` : ''}; озвучки: ${dubs.join(', ') || 'нет'}`;
 }
 
 const SOURCE: Record<TorrentRow['source'], string> = { manual: 'добавлена руками', anilibria: 'AniLibria', jacred: 'трекеры' };
@@ -77,7 +78,10 @@ async function main(args: string[]): Promise<number> {
       const report = await search.find(release);
       for (const error of report.errors) console.log(`✗ ${error}`);
       console.log(`Найдено раздач: ${report.found}, подошло тайтлу: ${report.matched}, разберу: ${report.candidates.length}`);
-      for (const c of report.candidates) console.log(`  + [${c.tracker}] ${c.title} · раздающих ${c.seeders}${c.pack ? ' · сборник сезонов' : ''}`);
+      for (const c of report.candidates) {
+        const studios = c.studios.length ? ` · ${c.studios.join(', ')}` : '';
+        console.log(`  + [${c.tracker}] ${c.title} · раздающих ${c.seeders}${studios}${c.pack ? ' · сборник сезонов' : ''}`);
+      }
       const rejected = report.rejected.slice(0, 15);
       if (rejected.length) console.log('Не подошли (первые 15):');
       for (const r of rejected) console.log(`  − ${r.title} — ${r.reason}`);

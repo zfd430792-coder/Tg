@@ -14,6 +14,7 @@ import { TorrentLibrary } from './library.ts';
 import { infoHashOf, publicTracker, safeMagnet } from './magnet.ts';
 import { type Candidate, fromAniLibria, fromJackett, pickCandidates, type SearchReport, TorrentSearch } from './search.ts';
 import { audioArgs, ffmpegArgs, type ProbeInfo, summarizeProbe, TorrentStreamer, videoArgs } from './streamer.ts';
+import { knownStudio, studiosIn } from './studios.ts';
 import { explicitSeasons, heightOf, matchTorrent, releaseTarget, searchQueries, titleFacts, yearsOf } from './titles.ts';
 import { studioKey, studioOf, type TorrentInfo, torrentSource } from './variants.ts';
 
@@ -320,10 +321,43 @@ describe('поиск раздач', () => {
     const own = fromAniLibria({ hash: hash(7), quality: { value: '2160p' }, seeders: '3' }, jjk)!;
     assert.deepEqual([own.source, own.height, own.seeders, own.title], ['anilibria', 2160, 3, 'Магическая битва [AniLibria 2160p]']);
     const candidate = (n: number, height: number, seeders: number, voices: string[] = []): Candidate => ({
-      source: 'jacred', tracker: 't', title: `t${n}`, magnet: '', infoHash: hash(n), seeders, size: null, height, voices, facts: null, season: 1, pack: false,
+      source: 'jacred', tracker: 't', title: `t${n}`, magnet: '', infoHash: hash(n), seeders, size: null, height, voices, studios: studiosIn(voices), facts: null, season: 1, pack: false,
     });
     const picked = pickCandidates([candidate(1, 1080, 5), candidate(2, 1080, 50), candidate(3, 1080, 20), candidate(4, 1080, 1, ['a', 'b', 'c']), candidate(5, 2160, 9), candidate(6, 720, 0)]);
-    assert.deepEqual(picked.map((c) => c.title), ['t2', 't3', 't4', 't5'], 'по 2 с наибольшим числом раздающих + где больше озвучек; без раздающих — нет');
+    assert.deepEqual(picked.map((c) => c.title), ['t2', 't3', 't5', 't4', 't1'], 'по 2 самых живых на качество, потом где больше озвучек; без раздающих — нет');
+
+    // Популярные студии: сначала раздачи, где они есть, даже если раздающих меньше.
+    const popular = pickCandidates(
+      [
+        candidate(11, 1080, 500, ['AniLibria']),
+        candidate(12, 1080, 3, ['DreamCast', 'AniDub']),
+        candidate(13, 720, 2, ['Студийная Банда']),
+        candidate(14, 1080, 40, ['AniDub']),
+        ...Array.from({ length: 12 }, (_, i) => candidate(20 + i, 1080, 100 + i)),
+      ],
+      6,
+    );
+    assert.deepEqual(popular.map((c) => c.title), ['t12', 't13', 't11', 't14', 't31', 't30'], 'Dream Cast + AniDub, Studio Band, AniLibria, потом остальные');
+    assert.deepEqual(fromJackett({ Tracker: 'rutor', Title: 'Магическая битва (2020) WEB-DL 1080p | AniLibria, AniDub, Dream Cast', MagnetUri: `magnet:?xt=urn:btih:${hash(9)}` }, 'x')?.studios, ['AniLibria', 'AniDub', 'Dream Cast']);
+    assert.ok(fromJackett({ Tracker: 'rutracker', Title: 'x', MagnetUri: `magnet:?xt=urn:btih:${hash(9)}` }, 'x')?.magnet.includes(encodeURIComponent('http://bt.t-ru.org/ann?magnet')), 'у RuTracker — его трекер');
+  });
+
+  test('популярные студии под любыми подписями', () => {
+    const cases: [string, string | null][] = [
+      ['DreamCast', 'Dream Cast'],
+      ['MVO | Dream Cast', 'Dream Cast'],
+      ['[AniDUB]', 'AniDub'],
+      ['Студийная Банда', 'Studio Band'],
+      ['StudioBand', 'Studio Band'],
+      ['AniLibria.TV', 'AniLibria'],
+      ['SHIZA Project (MVO)', 'SHIZA Project'],
+      ['Reanimedia', 'Reanimedia'],
+      ['JAM CLUB', 'JAM CLUB'],
+      ['Jam', 'JAM CLUB'],
+      ['Многоголосая закадровая', null],
+      ['Pajama Party', null],
+    ];
+    for (const [label, expected] of cases) assert.equal(knownStudio(label)?.name ?? null, expected, label);
   });
 });
 
@@ -355,7 +389,7 @@ describe('плеер «Торрент» из нескольких раздач',
     const source = torrentSource([{ row: row(1, 50), info: bd }, { row: row(2, 10), info: uhd }, { row: row(3, 5), info: hi10 }], 'more')!;
     assert.deepEqual([source.id, source.title, source.kind, source.status], ['torrent', 'Торрент', 'torrent', 'more']);
     const ids = source.dubs.map((d) => d.id);
-    assert.equal(ids[0], 'torrent:anilibria', 'больше всего раздающих');
+    assert.deepEqual(ids.slice(0, 3), ['torrent:anidub', 'torrent:anilibria', 'torrent:shiza'], 'популярные студии — первыми, в своём порядке');
     assert.equal(ids[ids.length - 1], 'torrent:jpn', 'японская — в конце');
     assert.deepEqual(source.dubs.map((d) => d.title).sort(), ['AniDub', 'AniLibria', 'SHIZA Project', 'Русская озвучка', 'Русская озвучка 2', 'Японская (оригинал)']);
     const variants = (dub: string) => source.variants!.filter((v) => v.dub === dub).map((v) => [v.id, v.height, v.codec, v.tenBit, v.transcode]);
@@ -493,7 +527,7 @@ describe('серия из раздачи', { skip: !hasFfmpeg && 'нет ffmpeg'
     const search = {
       sources: ['test'],
       find: async (): Promise<SearchReport> => ({
-        candidates: seeded.map((s, i) => ({ source: 'jacred', tracker: 'test', title: s.title, magnet: s.magnet, infoHash: s.infoHash, seeders: 10 - i, size: null, height: null, voices: [], facts: null, season: 1, pack: false })),
+        candidates: seeded.map((s, i) => ({ source: 'jacred', tracker: 'test', title: s.title, magnet: s.magnet, infoHash: s.infoHash, seeders: 10 - i, size: null, height: null, voices: [], studios: [], facts: null, season: 1, pack: false })),
         found: seeded.length,
         matched: seeded.length,
         errors: [],

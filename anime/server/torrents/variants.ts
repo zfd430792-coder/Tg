@@ -5,6 +5,7 @@
 import type { Dub, PlayerSource, TorrentVariant } from '../../shared/types.ts';
 import type { TorrentRow } from '../db.ts';
 import type { TorrentLayout } from './layout.ts';
+import { knownStudio } from './studios.ts';
 import { normalizeName } from './titles.ts';
 
 export interface TorrentInfo {
@@ -61,26 +62,37 @@ export function studioKey(studio: string): string {
 export const isOriginalTrack = (track: { title: string | null; language: string | null }) =>
   /^(jpn|ja)$/i.test(track.language ?? '') || /japan|японск|оригинал|(?:^|[^a-z])(?:original|jap|jpn)(?:[^a-z]|$)/i.test(track.title ?? '');
 
-/** Одна дорожка (встроенная или внешней папкой) — это озвучка с ключом и подписью. */
+/** Одна дорожка (встроенная или внешней папкой) — это озвучка с ключом, подписью и местом в списке. */
 interface Track {
   key: string;
   title: string;
   original: boolean;
+  /** Популярные студии (Dream Cast, AniDub, Studio Band…) — первыми, см. studios.ts. */
+  order: number;
+}
+
+const UNKNOWN = 1000;
+
+/** Студия из подписи: известная — под своим именем («MVO | DreamCast» → «Dream Cast»), иначе как подписана. */
+function studioTrack(label: string | null, fallbackKey: string): Track | null {
+  const known = label ? knownStudio(label) : null;
+  if (known) return { key: studioKey(known.name), title: known.name, original: false, order: known.order };
+  const studio = studioOf(label);
+  return studio ? { key: studioKey(studio) || fallbackKey, title: studio, original: false, order: UNKNOWN } : null;
 }
 
 function embeddedTrack(rowId: number, track: TorrentInfo['embedded'][number]): Track {
-  if (isOriginalTrack(track)) return { key: 'jpn', title: 'Японская (оригинал)', original: true };
-  const studio = studioOf(track.title);
-  if (studio) return { key: studioKey(studio) || `t${rowId}e${track.index}`, title: studio, original: false };
+  if (isOriginalTrack(track)) return { key: 'jpn', title: 'Японская (оригинал)', original: true, order: UNKNOWN };
+  const studio = studioTrack(track.title, `t${rowId}e${track.index}`);
+  if (studio) return studio;
   const language = track.language?.toLowerCase() ?? '';
   // «Русская озвучка» без студии в разных раздачах — разные озвучки: не сводим их вместе.
   const title = LANGUAGES[language] ?? `Дорожка ${track.index + 1}`;
-  return { key: /^(eng|en)$/.test(language) ? 'eng' : `t${rowId}e${track.index}`, title, original: false };
+  return { key: /^(eng|en)$/.test(language) ? 'eng' : `t${rowId}e${track.index}`, title, original: false, order: UNKNOWN + 1 };
 }
 
 function externalTrack(rowId: number, index: number, title: string): Track {
-  const studio = studioOf(title);
-  return studio ? { key: studioKey(studio) || `t${rowId}x${index}`, title: studio, original: false } : { key: `t${rowId}x${index}`, title, original: false };
+  return studioTrack(title, `t${rowId}x${index}`) ?? { key: `t${rowId}x${index}`, title, original: false, order: UNKNOWN + 1 };
 }
 
 /** Видео в браузере: H.264 10 бит и редкие кодеки сервер перекодирует в H.264 (не выше 1080p). */
@@ -94,18 +106,19 @@ export function servedVideo(info: Pick<TorrentInfo, 'videoCodec' | 'tenBit' | 'h
 export type TorrentStatus = 'searching' | 'more' | null;
 
 /**
- * Плеер «Торрент» из всех разобранных раздач тайтла. Озвучки — по убыванию раздающих,
- * японская — в конце; у каждой — варианты (раздача и дорожка в ней) с качеством и сериями.
+ * Плеер «Торрент» из всех разобранных раздач тайтла. Озвучки: сначала популярные студии
+ * (Dream Cast, AniDub, Studio Band, AniLibria…), потом остальные по числу раздающих, японская —
+ * в конце; у каждой — варианты (раздача и дорожка в ней) с качеством и сериями.
  */
 export function torrentSource(entries: { row: TorrentRow; info: TorrentInfo }[], status: TorrentStatus): PlayerSource | null {
   const variants: TorrentVariant[] = [];
-  const tracks = new Map<string, { title: string; titles: string[]; original: boolean; seeders: number }>();
+  const tracks = new Map<string, { title: string; titles: string[]; original: boolean; order: number; seeders: number }>();
   const add = (row: TorrentRow, info: TorrentInfo, id: string, track: Track, episodes: number[]) => {
     if (episodes.length === 0) return;
     const served = servedVideo(info);
     const dub = `torrent:${track.key}`;
     variants.push({ id, dub, height: served.height, codec: served.codec, tenBit: served.tenBit, transcode: served.transcode, episodes, seeders: row.seeders ?? 0 });
-    const group = tracks.get(dub) ?? { title: track.title, titles: [], original: track.original, seeders: 0 };
+    const group = tracks.get(dub) ?? { title: track.title, titles: [], original: track.original, order: track.order, seeders: 0 };
     group.titles.push(track.title);
     group.seeders += (row.seeders ?? 0) + 1;
     tracks.set(dub, group);
@@ -122,7 +135,7 @@ export function torrentSource(entries: { row: TorrentRow; info: TorrentInfo }[],
   }
 
   const dubs: Dub[] = [...tracks.entries()]
-    .sort(([, a], [, b]) => Number(a.original) - Number(b.original) || b.seeders - a.seeders || a.title.localeCompare(b.title, 'ru'))
+    .sort(([, a], [, b]) => Number(a.original) - Number(b.original) || a.order - b.order || b.seeders - a.seeders || a.title.localeCompare(b.title, 'ru'))
     .map(([id, group]) => {
       const own = variants.filter((v) => v.dub === id);
       // Подпись — самая короткая из встретившихся: «AniLibria», а не «AniLibria.TV MVO».

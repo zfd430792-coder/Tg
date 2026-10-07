@@ -243,7 +243,7 @@ anime/
 
 ```bash
 npm run typecheck    # TypeScript: сервер и фронтенд
-npm test             # 76 тестов: подпись initData, прокси HLS, уведомления, HTTP API на моке, бот без сети, торрент-плеер
+npm test             # 77 тестов: подпись initData, прокси HLS, уведомления, HTTP API на моке, бот без сети, торрент-плеер
 ```
 
 ## Что дальше

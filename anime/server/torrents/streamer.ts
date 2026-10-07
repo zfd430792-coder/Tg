@@ -90,7 +90,8 @@ const ABANDONED = 30_000;
 const RELEASED = 8_000;
 const MAX_TRANSCODES = 1;
 const TORRENT_IDLE = 10 * 60_000;
-const METADATA_TIMEOUT = 90_000;
+/** Раздачу без трекеров (только DHT) найти бывает небыстро, особенно сразу после запуска сервера. */
+const METADATA_TIMEOUT = 150_000;
 const READY_TIMEOUT = 3 * 60_000;
 
 /** Решение по видео: копировать как есть или перекодировать (браузер такой кодек не покажет). */
@@ -429,7 +430,7 @@ export class TorrentStreamer {
     if (!adding) {
       adding = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-          reject(new Error('Не нашёл раздающих: за 1,5 минуты не пришёл даже список файлов'));
+          reject(new Error('Не нашёл раздающих: за 2,5 минуты не пришёл даже список файлов'));
           void this.client.remove(infoHash, { destroyStore: false }).catch(() => undefined);
         }, METADATA_TIMEOUT);
         timer.unref();
