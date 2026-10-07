@@ -61,8 +61,8 @@ export class Players {
     if (options.cvhPublisherId && options.playerUrl) {
       this.balancers.push(new Cvh(options.cvhPublisherId, options.cvhApi ?? 'https://plapi.cdnvideohub.com/api/v1', options.playerUrl));
     }
-    if (options.allohaToken) this.balancers.push(new Alloha(options.allohaToken, options.allohaApi ?? 'https://apbugall.org/v2'));
-    // ID Кинопоиска ищем, только если он кому-то нужен (Alloha).
+    if (options.allohaToken) this.balancers.push(new Alloha(options.allohaToken, options.allohaApi ?? 'https://api.alloha.tv'));
+    // ID Кинопоиска ищем, только если он кому-то нужен (Alloha; без него она ищет по названию).
     this.ids =
       options.allohaToken && options.store
         ? new IdResolver({
@@ -127,17 +127,15 @@ export class Players {
           return ids;
         });
       }
-      // CVH ищет аниме по ID Shikimori, Alloha — по Кинопоиску или IMDb.
-      if (ids.shikimori || ids.kinopoisk || ids.imdb) {
-        const found = await Promise.allSettled(this.balancers.map((b) => withTimeout(b.find(release, ids), 10_000)));
-        found.forEach((result, i) => {
-          if (result.status === 'fulfilled' && result.value) players.push(result.value);
-          if (result.status === 'rejected') {
-            degraded = true;
-            this.log(`${this.balancers[i].title} не ответил для «${release.title}»`, result.reason);
-          }
-        });
-      }
+      // CVH ищет аниме по ID Shikimori, Alloha — по Кинопоиску или IMDb, а без них — по названию.
+      const found = await Promise.allSettled(this.balancers.map((b) => withTimeout(b.find(release, ids), 15_000)));
+      found.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value) players.push(result.value);
+        if (result.status === 'rejected') {
+          degraded = true;
+          this.log(`${this.balancers[i].title} не ответил для «${release.title}»`, result.reason);
+        }
+      });
     }
     return { players, degraded };
   }

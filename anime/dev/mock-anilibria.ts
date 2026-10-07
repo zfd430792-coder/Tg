@@ -373,33 +373,57 @@ const CVH_SDK = `customElements.define('video-player', class extends HTMLElement
   }
 });`;
 
+// Alloha: классический API (?token=…&kp=… или &name=…&list=1 — поиск) и новый (v2, токен в заголовке).
+const ALLOHA_TRANSLATIONS = [
+  { id: 9, name: 'AniDUB', quality: 'WEB-DL', resolutions: [1080, 720] },
+  { id: 10, name: 'AniLibria', quality: 'WEB-DL 720p', resolutions: [] },
+  { id: 79, name: 'Субтитры', quality: 'BDRip', uhd: true, resolutions: [2160, 1080, 720] },
+];
+
+/** Запись тайтла. В новом API озвучки и сезоны — массивы, в классическом — объекты с номером в ключе. */
+function allohaItem(r: Raw, classic: boolean): Raw {
+  const index = releases.indexOf(r);
+  const movie = r.type.value === 'MOVIE';
+  const count = kodikEpisodes(r, 1);
+  const iframe = `${ORIGIN}/balancer/alloha/?token_movie=m${r.id}&token=test-alloha`;
+  const dubsOf = (n: number) => ALLOHA_TRANSLATIONS.filter((t) => t.id !== 10 || n < r.episodes.length);
+  const base = { name: r.name.main, original_name: r.name.english, year: r.year, category: movie ? 2 : 4, id_kp: 1000000 + index, iframe };
+  if (!classic) {
+    const episodes = Array.from({ length: count }, (_, n) => ({ episode: n + 1, translations: dubsOf(n).map((t) => ({ id: t.id })) }));
+    return { ...base, translations: ALLOHA_TRANSLATIONS, seasons: [{ season: 1, episodes_count: count, episodes }] };
+  }
+  const translation_iframe = Object.fromEntries(ALLOHA_TRANSLATIONS.map(({ id, ...t }) => [id, { ...t, iframe: `${iframe}&translation=${id}` }]));
+  if (movie) return { ...base, translation_iframe };
+  const episodes = Object.fromEntries(
+    Array.from({ length: count }, (_, n) => [
+      n + 1,
+      { episode: n + 1, iframe, translation: Object.fromEntries(dubsOf(n).map((t) => [t.id, { translation: t.name, quality: t.quality }])) },
+    ]),
+  );
+  return { ...base, seasons_count: 1, translation_iframe, seasons: { 1: { season: 1, iframe, episodes } } };
+}
+
+function allohaClassic(url: URL): Raw {
+  if (url.searchParams.get('token') !== 'test-alloha') return { status: 'error', error_info: 'not valid token' };
+  const name = url.searchParams.get('name')?.toLowerCase();
+  if (name) {
+    const found = releases.filter((r) => [r.name.main, r.name.english].some((n) => String(n ?? '').toLowerCase().includes(name)));
+    if (found.length === 0) return { status: 'error', error_info: 'not movie' };
+    // В списке category — слово, а номер категории — в category_id.
+    const list = found.map((r) => {
+      const item = allohaItem(r, true);
+      return { ...item, category: item.category === 2 ? 'Мультфильм' : 'Сериал', category_id: item.category };
+    });
+    return { status: 'success', data: list };
+  }
+  const r = byKinopoisk(url.searchParams.get('kp'));
+  return r ? { status: 'success', data: allohaItem(r, true) } : { status: 'error', error_info: 'not movie' };
+}
+
 function allohaSearch(url: URL, auth: string | undefined): Raw {
   if (auth !== 'Bearer test-alloha') return { status: 'error', error_info: 'not valid token' };
   const r = byKinopoisk(url.searchParams.get('kp'));
-  if (!r) return { status: 'error', error_info: 'not movie' };
-  const count = kodikEpisodes(r, 1);
-  const translations = [
-    { id: 9, name: 'AniDUB', quality: 'WEB-DL', resolutions: [1080, 720] },
-    { id: 10, name: 'AniLibria', quality: 'WEB-DL 720p', resolutions: [] },
-    { id: 79, name: 'Субтитры', quality: 'BDRip', uhd: true, resolutions: [2160, 1080, 720] },
-  ];
-  return {
-    data: {
-      name: r.name.main,
-      iframe: `${ORIGIN}/balancer/alloha/?token_movie=m${r.id}&token=test-alloha`,
-      translations,
-      seasons: [
-        {
-          season: 1,
-          episodes_count: count,
-          episodes: Array.from({ length: count }, (_, n) => ({
-            episode: n + 1,
-            translations: translations.filter((t) => t.id !== 10 || n < r.episodes.length).map((t) => ({ id: t.id })),
-          })),
-        },
-      ],
-    },
-  };
+  return r ? { data: allohaItem(r, false) } : { status: 'error', error_info: 'not movie' };
 }
 
 function shikimoriGraphql(body: Raw): Raw {
@@ -494,6 +518,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/javascript' }).end(CVH_SDK);
     return;
   }
+  if (p === '/alloha') return send(res, 200, allohaClassic(url));
   if (p === '/alloha/v2/movies/search') return send(res, 200, allohaSearch(url, req.headers.authorization));
   // Jacred (агрегатор трекеров с Jackett-совместимым API): поиск по названию.
   if (p === '/jacred/api/v2.0/indexers/all/results') {

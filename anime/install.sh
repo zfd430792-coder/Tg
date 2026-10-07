@@ -230,7 +230,8 @@ ask_options() {
 
   if [[ -z "${CVH_PUBLISHER_ID+x}${ALLOHA_TOKEN+x}" ]]; then
     printf '  Плееры в 1080p и с множеством озвучек: CVH и Alloha. Видео хранят они сами, для сайта это бесплатно,\n' >&2
-    printf '  но ID и токен выдают после регистрации сайта: cdnvideohub.com и alloha.tv. Пока нет — нажмите Enter.\n' >&2
+    printf '  но ID и токен выдают после регистрации сайта: cdnvideohub.com и alloha.tv. Alloha работает и без\n' >&2
+    printf '  токена Kodik — ищет тайтлы по названию. Пока нет — нажмите Enter.\n' >&2
   fi
   ask_checked CVH_PUBLISHER_ID "ID издателя CVH (data-publisher-id, только цифры)" '^[0-9]{1,12}$' plain
   ask_checked ALLOHA_TOKEN "Токен Alloha" '^[A-Za-z0-9_.-]{8,128}$' secret

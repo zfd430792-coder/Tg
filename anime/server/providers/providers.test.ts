@@ -3,7 +3,7 @@ import { describe, mock, test } from 'node:test';
 import { frameSrc, normalizeLink } from '../../shared/players.ts';
 import type { Release } from '../../shared/types.ts';
 import { Store } from '../db.ts';
-import { Alloha, Cvh, cvhPage, pickSeason } from './balancers.ts';
+import { Alloha, Cvh, cvhPage, pickAllohaItem, pickSeason } from './balancers.ts';
 import { IdResolver, seasonFromTitle, ShikimoriApi } from './ids.ts';
 import { Players } from './index.ts';
 import { idsFrom, isKodikLink, KodikApi, kodikFallbackLink, kodikPlayer, noIds, playerLinkKey, qualityOf, toDubs, type KodikResult } from './kodik.ts';
@@ -161,7 +161,7 @@ describe('Alloha', () => {
     episodes: [1, 2, 3].map((episode) => ({ episode, translations: season === 2 && episode === 3 ? [{ id: 9 }] : [{ id: 9 }, { id: 10 }] })),
   }));
 
-  test('озвучки с последней серией в нашем сезоне, качество и параметры серии', async () => {
+  test('новый API (v2): озвучки с последней серией в нашем сезоне, качество и параметры серии', async () => {
     const stub = stubFetch({
       'https://alloha.test/v2/movies/search': (url, init) => {
         assert.equal(url.searchParams.get('kp'), '555');
@@ -210,10 +210,124 @@ describe('Alloha', () => {
     const stub = stubFetch({ 'https://alloha.test/': () => ({ status: 'error', error_info: 'not movie' }) });
     try {
       assert.equal(await new Alloha('T', 'https://alloha.test/v2').find(release, ids()), null);
-      assert.equal(await new Alloha('T', 'https://alloha.test/v2').find(release, noIds()), null, 'без ID Кинопоиска не ищем');
+      assert.equal(await new Alloha('T', 'https://alloha.test').find(release, noIds()), null, 'по названию тоже не нашлось');
     } finally {
       stub.restore();
     }
+  });
+
+  // Как отвечает классический API: сезоны, серии и озвучки — объекты с номером в ключе.
+  const translation = (name: string, quality: string) => ({ name, quality, iframe: 'https://alloha.player/?token_movie=x', adv: false });
+  const episode = (n: number, dubs: string[]) => ({
+    episode: n,
+    iframe: 'https://alloha.player/?token_movie=x',
+    translation: Object.fromEntries(dubs.map((id) => [id, { translation: `Озвучка ${id}`, quality: 'WEB-DL' }])),
+  });
+  const full = {
+    name: 'Магическая битва',
+    original_name: 'Jujutsu Kaisen',
+    year: 2020,
+    category: 4,
+    id_kp: 1312345,
+    iframe: 'https://alloha.player/?token_movie=x',
+    seasons_count: 2,
+    translation_iframe: { 9: translation('AniDUB', 'WEB-DL 1080p'), 10: translation('Dream Cast', 'WEB-DL'), 79: translation('Субтитры', 'WEB-DL') },
+    seasons: {
+      1: { season: 1, episodes: { 1: episode(1, ['9', '79']), 2: episode(2, ['9']) } },
+      2: { season: 2, episodes: { 1: episode(1, ['9', '10']), 2: episode(2, ['10']), 3: episode(3, ['10']) } },
+    },
+  };
+
+  test('классический API: токен в адресе, сезоны и озвучки объектами', async () => {
+    const stub = stubFetch({
+      'https://alloha.test/': (url, init) => {
+        assert.equal(url.pathname, '/');
+        assert.equal(url.searchParams.get('token'), 'T');
+        assert.equal(url.searchParams.get('kp'), '555');
+        assert.equal((init?.headers as Record<string, string>).authorization, undefined, 'токен не в заголовке');
+        return { status: 'success', data: full };
+      },
+    });
+    try {
+      const player = await new Alloha('T', 'https://alloha.test').find(release, ids({ kpSeason: 1 }));
+      assert.equal(player?.season, '1');
+      assert.deepEqual(player?.dubs.map((d) => [d.title, d.lastEpisode, d.type, d.quality]), [
+        ['AniDUB', 2, 'voice', 1080],
+        ['Субтитры', 1, 'subtitles', null],
+      ]);
+      assert.equal(player?.dubs[0].link, 'https://alloha.player/?token_movie=x&translation=9');
+      assert.equal(player?.lastEpisode, 2);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('без ID Кинопоиска ищет по названию и берёт полную запись по её ID', async () => {
+    const season2 = {
+      ...release,
+      id: 2,
+      title: 'Магическая битва 2',
+      titleEn: 'Jujutsu Kaisen 2nd Season',
+      year: 2023,
+      type: 'ТВ',
+      episodesTotal: 23,
+    } as Release;
+    const names: string[] = [];
+    const stub = stubFetch({
+      'https://alloha.test/': (url) => {
+        assert.equal(url.searchParams.get('token'), 'T');
+        const name = url.searchParams.get('name');
+        if (name) {
+          names.push(name);
+          assert.equal(url.searchParams.get('list'), '1');
+          return {
+            status: 'success',
+            data: [
+              { name: 'Магическая битва', year: 1995, category: 'Сериал', category_id: 4, id_kp: 1 },
+              { name: 'Магическая битва: Фильм', year: 2021, category: 'Мультфильм', category_id: 2, id_kp: 2 },
+              { name: 'Магическая битва', original_name: 'Jujutsu Kaisen', year: 2020, category: 'Сериал', category_id: 4, id_kp: 1312345, last_season: 2 },
+            ],
+          };
+        }
+        assert.equal(url.searchParams.get('kp'), '1312345', 'полная запись — по ID из списка');
+        return { status: 'success', data: full };
+      },
+    });
+    try {
+      const player = await new Alloha('T', 'https://alloha.test').find(season2, noIds());
+      assert.deepEqual(names, ['Магическая битва'], 'название без номера сезона, до первого совпадения');
+      assert.equal(player?.season, '2', 'сезон — из названия тайтла');
+      assert.deepEqual(player?.dubs.map((d) => [d.title, d.lastEpisode]), [
+        ['Dream Cast', 3],
+        ['AniDUB', 1],
+      ]);
+      assert.equal(player?.frame?.episode, 'episode');
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('по названию: совпасть должны имя, год и фильм или сериал; аниме — в приоритете', () => {
+    const tv = { ...release, title: 'Атака титанов', titleEn: 'Shingeki no Kyojin', year: 2013, type: 'ТВ' } as Release;
+    const item = (extra: Record<string, unknown>) => ({ name: 'Атака титанов', year: 2013, category_id: 4, ...extra });
+    assert.equal(pickAllohaItem([item({ year: 2015 })], tv), null, 'другой год');
+    assert.equal(pickAllohaItem([item({ category_id: 1 })], tv), null, 'фильм, а нужен сериал');
+    assert.equal(pickAllohaItem([item({ name: 'Атака на титанов' })], tv), null, 'другое название');
+    assert.equal(pickAllohaItem([item({ name: 'Вторжение гигантов', original_name: 'Shingeki no kyojin', id_kp: 7 })], tv)?.id_kp, 7, 'по оригинальному названию');
+    const anime = item({ category: 'Аниме', category_id: 5, id_kp: 5 });
+    assert.equal(pickAllohaItem([item({ id_kp: 4 }), anime], tv)?.id_kp, 5);
+    // Категория по ID — число в category.
+    assert.equal(pickAllohaItem([{ name: 'Атака титанов', year: 2013, category: 1 }], tv), null);
+
+    const movie = { ...release, title: 'Магическая битва 0', titleEn: 'Jujutsu Kaisen 0', year: 2021, type: 'Фильм' } as Release;
+    const found = pickAllohaItem(
+      [
+        { name: 'Магическая битва', year: 2020, category_id: 4, last_season: 2, id_kp: 1 },
+        { name: 'Магическая битва 0', year: 2021, category_id: 2, id_kp: 2 },
+      ],
+      movie,
+    );
+    assert.equal(found?.id_kp, 2, 'для фильма сериал не берём');
   });
 });
 
@@ -422,6 +536,30 @@ describe('список плееров', () => {
     } finally {
       mock.timers.reset();
       stub.restore();
+    }
+  });
+
+  test('без Kodik и Shikimori Alloha находит тайтл по названию', async () => {
+    const store = new Store(':memory:');
+    const named = { ...release, title: 'Атака титанов', titleEn: 'Attack on Titan', year: 2013, type: 'ТВ' } as Release;
+    const stub = stubFetch({
+      'https://alloha.test/': (url) => {
+        if (url.searchParams.get('name')) {
+          return { status: 'success', data: [{ name: 'Атака титанов', year: 2013, category: 'Сериал', category_id: 4, id_kp: 749374 }] };
+        }
+        assert.equal(url.searchParams.get('kp'), '749374');
+        const episodes = { 1: { episode: 1, translation: { 10: { translation: 'AniLibria' } } } };
+        return { status: 'success', data: { iframe: 'https://alloha.player/?x=1', translation_iframe: { 10: { name: 'AniLibria' } }, seasons: { 1: { season: 1, episodes } } } };
+      },
+    });
+    try {
+      const players = new Players({ kodikToken: null, kodikApi: 'x', allohaToken: 'A', allohaApi: 'https://alloha.test', shikimoriUrl: null, store, log: () => undefined });
+      const found = await players.forRelease(named);
+      assert.deepEqual(found.map((p) => p.id), ['kodik', 'alloha']);
+      assert.deepEqual(found[1].dubs.map((d) => [d.title, d.lastEpisode]), [['AniLibria', 1]]);
+    } finally {
+      stub.restore();
+      store.close();
     }
   });
 

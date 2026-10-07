@@ -4,10 +4,12 @@
 //
 // Форматы API собраны по открытым клиентам этих балансеров (см. README):
 //   CVH     GET https://plapi.cdnvideohub.com/api/v1/player/sv/playlist?pub=ID&aggr=mali&id=<ID Shikimori>
-//   Alloha  GET https://apbugall.org/v2/movies/search?kp=ID, Authorization: Bearer <токен>
+//   Alloha  GET https://api.alloha.tv/?token=<токен>&kp=ID (или &name=<название>&list=1 — поиск)
+//           GET https://apbugall.org/v2/movies/search?kp=ID, Authorization: Bearer <токен> — новый API
 
 import { normalizeLink } from '../../shared/players.ts';
 import type { Dub, PlayerSource, Release } from '../../shared/types.ts';
+import { normalizeName, releaseTarget, searchQueries } from '../torrents/titles.ts';
 import { type ExternalIds, qualityOf } from './kodik.ts';
 
 type Raw = Record<string, any>;
@@ -30,6 +32,9 @@ async function getJson(url: string, headers: Record<string, string> = {}): Promi
 
 const values = (value: unknown): Raw[] =>
   Array.isArray(value) ? value : value && typeof value === 'object' ? Object.values(value as Raw) : [];
+
+/** Ответ Alloha: по ID — одна запись, по названию — список. */
+const firstItem = (data: unknown): Raw | null => (Array.isArray(data) ? (data[0] ?? null) : data && typeof data === 'object' ? (data as Raw) : null);
 
 const toNumber = (value: unknown): number | null => {
   const n = Number.parseInt(String(value ?? ''), 10);
@@ -78,6 +83,41 @@ function allohaQuality(translation: Raw): number | null {
 }
 
 /**
+ * Фильм это или сериал. Категория Alloha: 1 — фильм, 2 — мультфильм, 3 — мультсериал,
+ * 4 — сериал, 5 — аниме (бывает и тем, и другим). По ID она в поле category, в списке —
+ * в category_id (а category там — слово). null — не понять.
+ */
+function allohaKind(item: Raw): 'movie' | 'serial' | null {
+  const category = toNumber(item.category_id) ?? toNumber(item.category);
+  if (category === 1 || category === 2) return 'movie';
+  if (category === 3 || category === 4) return 'serial';
+  return toNumber(item.last_season) || toNumber(item.seasons_count) || values(item.seasons).length ? 'serial' : null;
+}
+
+/**
+ * Тайтл AniLibria в каталоге Alloha, найденный по названию: имя совпадает (русское,
+ * оригинальное или альтернативное), год подходит, фильм не подменяет сериал. У Alloha
+ * сезоны — внутри одной записи, поэтому у 2-го и следующих сезонов запись франшизы
+ * может быть на несколько лет старше. Из подходящих — аниме, если есть.
+ */
+export function pickAllohaItem(items: Raw[], release: Release): Raw | null {
+  const target = releaseTarget(release);
+  const squeeze = (value: string) => normalizeName(value).replace(/ /g, '');
+  const ours = new Set(target.names.map((n) => n.name.replace(/ /g, '')));
+  const fits = (item: Raw) => {
+    const names = [item.name, item.original_name, item.alternative_name].filter((n): n is string => typeof n === 'string' && n.trim() !== '');
+    if (!names.flatMap((n) => [n, n.split(/:\s/)[0]]).some((n) => ours.has(squeeze(n)))) return false;
+    const kind = allohaKind(item);
+    if (kind && (kind === 'movie') !== target.movie) return false;
+    const year = toNumber(item.year);
+    if (!release.year || !year) return true;
+    return target.season > 1 ? year <= release.year + 1 && year >= release.year - 25 : Math.abs(year - release.year) <= 1;
+  };
+  const matched = items.filter(fits);
+  return matched.find((item) => (toNumber(item.category_id) ?? toNumber(item.category)) === 5) ?? matched[0] ?? null;
+}
+
+/**
  * Alloha: 1080p, у части тайтлов 4K. Озвучки выбираются на нашей странице
  * (translation=<id>, hidden=translation прячет их меню). Время просмотра плеер не
  * сообщает, поэтому в историю попадает только то, что серия открыта.
@@ -93,17 +133,41 @@ export class Alloha implements Balancer {
     this.base = base;
   }
 
-  async find(_release: Release, ids: ExternalIds): Promise<PlayerSource | null> {
-    const query = ids.kinopoisk ? `kp=${ids.kinopoisk}` : ids.imdb ? `imdb=${ids.imdb}` : null;
-    if (!query) return null;
-    const answer = await getJson(`${this.base}/movies/search?${query}`, { authorization: `Bearer ${this.token}` });
+  /**
+   * Запрос к API. Классический — GET https://api.alloha.tv/?token=…&kp=… (токен в адресе);
+   * если в ALLOHA_API задан адрес v2 (…/v2), — /movies/search с токеном в заголовке.
+   */
+  private async request(params: Record<string, string>): Promise<Raw | null> {
+    const query = new URLSearchParams(params).toString();
+    const answer = /\/v2$/.test(this.base)
+      ? await getJson(`${this.base}/movies/search?${query}`, { authorization: `Bearer ${this.token}` })
+      : await getJson(`${this.base}/?token=${encodeURIComponent(this.token)}&${query}`);
     if (answer.status === 'error' || answer.error) return null;
-    const data = answer.data ?? {};
+    return answer;
+  }
+
+  /** Тайтл в Alloha: по ID Кинопоиска или IMDb, а без них (Kodik без токена, Shikimori недоступен) — по названию. */
+  private async lookup(release: Release, ids: ExternalIds): Promise<Raw | null> {
+    if (ids.kinopoisk) return firstItem((await this.request({ kp: ids.kinopoisk }))?.data);
+    if (ids.imdb) return firstItem((await this.request({ imdb: ids.imdb }))?.data);
+    for (const name of searchQueries(release)) {
+      const found = pickAllohaItem(values((await this.request({ name, list: '1' }))?.data), release);
+      if (!found) continue;
+      // В списке бывает не всё (озвучки, ссылки на серии) — полную запись берём по её ID Кинопоиска.
+      const kp = toNumber(found.id_kp);
+      return (kp && firstItem((await this.request({ kp: String(kp) }))?.data)) || found;
+    }
+    return null;
+  }
+
+  async find(release: Release, ids: ExternalIds): Promise<PlayerSource | null> {
+    const data = await this.lookup(release, ids);
+    if (!data) return null;
     const iframe = normalizeLink(data.iframe ?? data.iframe_url);
     if (!iframe) return null;
 
     const seasons = values(data.seasons);
-    const picked = pickSeason(seasons, ids.kpSeason);
+    const picked = pickSeason(seasons, ids.kpSeason ?? (ids.kinopoisk || ids.imdb ? null : releaseTarget(release).season));
     if (seasons.length && picked === 'missing') return null;
     const season = picked === 'missing' ? null : picked;
     const current = seasons.find((s) => toNumber(s.season) === season);

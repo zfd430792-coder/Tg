@@ -50,9 +50,10 @@ export const config = {
   playerUrl: (str('PLAYER_URL') ?? (str('PLAYER_DOMAIN') ? `https://${str('PLAYER_DOMAIN')}` : null))?.replace(/\/+$/, '') ?? null,
   cvhApi: str('CVH_API', 'https://plapi.cdnvideohub.com/api/v1')!.replace(/\/+$/, ''),
   cvhSdk: str('CVH_SDK', 'https://player.cdnvideohub.com/s2/stable/video-player.umd.js')!,
-  /** Alloha: токен партнёра. Тайтл ищет по ID Кинопоиска. */
+  /** Alloha: токен партнёра. Тайтл ищет по ID Кинопоиска, а без него — по названию. */
   allohaToken: str('ALLOHA_TOKEN'),
-  allohaApi: str('ALLOHA_API', 'https://apbugall.org/v2')!.replace(/\/+$/, ''),
+  /** API Alloha: классический (токен в адресе); адрес v2 (…/v2) — с токеном в заголовке. */
+  allohaApi: str('ALLOHA_API', 'https://api.alloha.tv')!.replace(/\/+$/, ''),
   /** Где искать ID Кинопоиска по ID Shikimori, если нет токена Kodik. Пусто — не искать (в России Shikimori заблокирован). */
   shikimoriUrl: process.env.SHIKIMORI_URL === '' ? null : str('SHIKIMORI_URL', 'https://shikimori.io')!.replace(/\/+$/, ''),
 
