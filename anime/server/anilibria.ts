@@ -80,6 +80,8 @@ export class AniLiberty {
   private options: AniLibertyOptions;
   /** Ссылки на видео по id серии — для мастер-плейлиста без лишнего запроса. */
   private sources = new Map<string, VideoSource[]>();
+  /** Раздачи из ответа о релизе (поле torrents) — запасной путь, если нет отдельного метода. */
+  private releaseTorrentList = new Map<number, Raw[]>();
 
   constructor(options: AniLibertyOptions) {
     this.options = options;
@@ -151,6 +153,11 @@ export class AniLiberty {
   }
 
   release(raw: Raw): Release {
+    if (Array.isArray(raw.torrents)) {
+      this.releaseTorrentList.delete(Number(raw.id));
+      this.releaseTorrentList.set(Number(raw.id), raw.torrents);
+      if (this.releaseTorrentList.size > 5000) this.releaseTorrentList.delete(this.releaseTorrentList.keys().next().value as number);
+    }
     const voices = list(raw.members)
       .filter((m) => m.role?.value === 'voicing' || /озвуч/i.test(String(m.role?.description ?? '')))
       .map((m) => text(m.nickname))
@@ -198,6 +205,20 @@ export class AniLiberty {
     return this.cached(key, 300, async () =>
       this.release((await this.request(`/anime/releases/${encodeURIComponent(idOrAlias)}`)) as Raw),
     );
+  }
+
+  /** Торрент-раздачи тайтла от самой AniLibria: их озвучка, обычно и японская дорожка. */
+  releaseTorrents(releaseId: number): Promise<Raw[]> {
+    return this.cached(`torrents:${releaseId}`, 1800, async () => {
+      try {
+        return list(await this.request(`/anime/torrents/release/${releaseId}`));
+      } catch (error) {
+        const known = this.releaseTorrentList.get(releaseId);
+        if (known) return known;
+        if (!(error instanceof UpstreamError) || error.status !== 404) throw error;
+        return list(((await this.request(`/anime/releases/${releaseId}`)) as Raw)?.torrents);
+      }
+    });
   }
 
   getEpisode(episodeId: string): Promise<Episode> {

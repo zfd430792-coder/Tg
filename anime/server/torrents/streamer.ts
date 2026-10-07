@@ -47,11 +47,15 @@ export interface PlayRequest {
   infoHash: string;
   video: number;
   audio: AudioChoice;
+  /** С какой секунды готовить серию: после перемотки вперёд или смены озвучки на середине. */
+  start?: number;
+  /** Сессия, которую зритель только что бросил (сменил озвучку, качество, перемотал). */
+  previous?: string | null;
 }
 
 export type SessionState =
   | { status: 'starting'; message: string; peers: number; speed: number }
-  | { status: 'ready'; session: string; duration: number | null; height: number | null; codec: string | null }
+  | { status: 'ready'; session: string; duration: number | null; height: number | null; codec: string | null; offset: number }
   | { status: 'error'; message: string }
   | { status: 'busy'; message: string };
 
@@ -62,6 +66,12 @@ interface Session {
   proc: ChildProcess | null;
   state: SessionState;
   lastAccess: number;
+  /** ffmpeg перекодирует видео (H.264 10 бит): тяжело для процессора, одновременно — одна такая. */
+  transcode: boolean;
+  /** Зритель ушёл с этой сессии на другую. */
+  released: boolean;
+  /** Когда сессия закончилась ошибкой или отказом: повторный запрос через пару секунд — новая попытка. */
+  failedAt: number | null;
 }
 
 /**
@@ -76,6 +86,9 @@ const MIN_FREE = 3 * 1024 ** 3;
 const SESSION_IDLE = 2 * 60_000;
 /** Сессию не спрашивали дольше этого — её бросили (плеер раз в 20 с напоминает о себе). */
 const ABANDONED = 30_000;
+/** Сессию, с которой зритель ушёл сам, освобождаем быстрее — если её не смотрит кто-то ещё. */
+const RELEASED = 8_000;
+const MAX_TRANSCODES = 1;
 const TORRENT_IDLE = 10 * 60_000;
 const METADATA_TIMEOUT = 90_000;
 const READY_TIMEOUT = 3 * 60_000;
@@ -95,12 +108,16 @@ export function audioArgs(audio: { codec: string; channels: number } | undefined
   return ['-c:a', 'aac', '-ac', '2', '-b:a', '192k'];
 }
 
-/** Команда ffmpeg: видео из раздачи + выбранная озвучка → HLS (fMP4) в папку out. */
-export function ffmpegArgs(input: { video: string; audio: string | null }, choice: AudioChoice, video: ProbeInfo, audioProbe: ProbeInfo | null, out: string): string[] {
-  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', input.video];
+/**
+ * Команда ffmpeg: видео из раздачи + выбранная озвучка → HLS (fMP4) в папку out. start —
+ * с какой секунды: ffmpeg прыгает к ближайшему ключевому кадру, качать начало серии не нужно.
+ */
+export function ffmpegArgs(input: { video: string; audio: string | null }, choice: AudioChoice, video: ProbeInfo, audioProbe: ProbeInfo | null, out: string, start = 0): string[] {
+  const seek = start > 0 ? ['-ss', String(start)] : [];
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', ...seek, '-i', input.video];
   let audio: ProbeInfo['audio'][number] | undefined;
   if (choice.kind === 'external' && input.audio) {
-    args.push('-i', input.audio);
+    args.push(...seek, '-i', input.audio);
     audio = audioProbe?.audio[0];
     args.push('-map', '0:v:0', '-map', '1:a:0');
   } else {
@@ -249,10 +266,21 @@ export class TorrentStreamer {
    */
   play(request: PlayRequest): SessionState {
     const audioKey = request.audio.kind === 'embedded' ? `e${request.audio.index}` : `x${request.audio.file}`;
-    const id = createHash('sha1').update(`${request.infoHash}:${request.video}:${audioKey}`).digest('hex').slice(0, 20);
-    const existing = this.sessions.get(id);
+    const start = Math.max(0, Math.floor(request.start ?? 0));
+    const id = createHash('sha1').update(`${request.infoHash}:${request.video}:${audioKey}:${start}`).digest('hex').slice(0, 20);
+    if (request.previous && request.previous !== id) {
+      const previous = this.sessions.get(request.previous);
+      if (previous) previous.released = true;
+    }
+    let existing = this.sessions.get(id);
+    // Ошибку плеер уже показал («Попробовать ещё раз») — новый запрос пробует заново.
+    if (existing?.failedAt && Date.now() - existing.failedAt > 4000) {
+      this.stopSession(existing);
+      existing = undefined;
+    }
     if (existing) {
       existing.lastAccess = Date.now();
+      existing.released = false;
       this.lastUse.set(request.infoHash, Date.now());
       if (existing.state.status === 'starting') existing.state = { ...existing.state, ...this.stats(request.infoHash) };
       return existing.state;
@@ -261,7 +289,7 @@ export class TorrentStreamer {
     // Брошенные (озвучку или серию сменили, вкладку закрыли) уступают место сразу.
     const running = () => [...this.sessions.values()].filter((s) => s.proc !== null || s.state.status === 'starting');
     if (running().length >= this.options.maxSessions) {
-      for (const session of running()) if (Date.now() - session.lastAccess > ABANDONED) this.stopSession(session);
+      for (const session of running()) if (this.abandoned(session)) this.stopSession(session);
     }
     if (running().length >= this.options.maxSessions) {
       return { status: 'busy', message: 'Сервер сейчас готовит другие серии. Попробуйте через минуту.' };
@@ -273,15 +301,25 @@ export class TorrentStreamer {
       proc: null,
       state: { status: 'starting', message: 'Подключаюсь к раздаче…', peers: 0, speed: 0 },
       lastAccess: Date.now(),
+      transcode: false,
+      released: false,
+      failedAt: null,
     };
     this.sessions.set(id, session);
     this.lastUse.set(request.infoHash, Date.now());
     void this.prepare(session, request).catch((error: unknown) => {
       this.options.log('Торрент: серию не удалось подготовить', error);
       session.state = { status: 'error', message: error instanceof Error ? error.message : 'Не удалось подготовить серию' };
+      session.failedAt = Date.now();
       this.stopSession(session, false);
     });
     return session.state;
+  }
+
+  /** Раздачи, которые сейчас смотрят или смотрели в последние минуты. */
+  activeHashes(): Set<string> {
+    const since = Date.now() - TORRENT_IDLE;
+    return new Set([...this.sessions.values()].map((s) => s.infoHash).concat([...this.lastUse].filter(([, at]) => at > since).map(([hash]) => hash)));
   }
 
   /** Путь к файлу HLS-сессии (плейлист, init.mp4, сегменты) или null. */
@@ -301,7 +339,13 @@ export class TorrentStreamer {
     return text?.replace('#EXTM3U\n', '#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n') ?? null;
   }
 
+  private abandoned(session: Session): boolean {
+    const idle = Date.now() - session.lastAccess;
+    return idle > ABANDONED || (session.released && idle > RELEASED);
+  }
+
   private async prepare(session: Session, request: PlayRequest): Promise<void> {
+    const start = Math.max(0, Math.floor(request.start ?? 0));
     await this.torrent(request.magnet, request.infoHash);
     session.state = { status: 'starting', message: 'Читаю серию…', ...this.stats(request.infoHash) };
     const video = await this.probe(request.magnet, request.infoHash, request.video);
@@ -313,6 +357,18 @@ export class TorrentStreamer {
       await this.trimCache();
       if ((await this.freeSpace()) < MIN_FREE) throw new Error('На сервере мало места на диске — серию сейчас не подготовить');
     }
+    // Перекодирование (H.264 10 бит) тяжёлое: одновременно — только одно. Брошенные уступают.
+    if (videoArgs(video.video).includes('libx264')) {
+      const heavy = () => [...this.sessions.values()].filter((s) => s !== session && s.transcode && s.proc !== null);
+      for (const other of heavy()) if (this.abandoned(other)) this.stopSession(other);
+      if (heavy().length >= MAX_TRANSCODES) {
+        session.state = { status: 'busy', message: 'Эту раздачу сервер перекодирует, а сейчас он уже занят такой. Выберите другое качество или попробуйте через пару минут.' };
+        session.failedAt = Date.now();
+        this.stopSession(session, false);
+        return;
+      }
+      session.transcode = true;
+    }
     await mkdir(session.dir, { recursive: true });
     const args = ffmpegArgs(
       {
@@ -323,6 +379,7 @@ export class TorrentStreamer {
       video,
       audioProbe,
       session.dir,
+      start,
     );
     session.state = { status: 'starting', message: 'Готовлю видео…', ...this.stats(request.infoHash) };
     const proc = spawn(this.options.ffmpeg ?? 'ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -333,6 +390,7 @@ export class TorrentStreamer {
       session.proc = null;
       if (code !== 0 && code !== null && session.state.status !== 'ready') {
         session.state = { status: 'error', message: `ffmpeg не смог подготовить серию: ${stderr.trim().split('\n').pop() ?? code}` };
+        session.failedAt = Date.now();
       }
     });
 
@@ -343,7 +401,8 @@ export class TorrentStreamer {
       if (text.includes('#EXTINF')) {
         // Видео, которое перекодировали, — H.264; скопированное — в своём кодеке (HEVC, AV1…).
         const codec = videoArgs(video.video).includes('libx264') ? 'h264' : video.video.codec;
-        session.state = { status: 'ready', session: session.id, duration: video.duration, height: video.video.height, codec };
+        const height = session.transcode && video.video.height ? Math.min(video.video.height, 1080) : video.video.height;
+        session.state = { status: 'ready', session: session.id, duration: video.duration, height, codec, offset: start };
         return;
       }
       if (Date.now() - started > READY_TIMEOUT) throw new Error('Раздача отдаёт слишком медленно: за 3 минуты не скачалось начало серии');
@@ -466,7 +525,7 @@ export class TorrentStreamer {
   private async cleanup(): Promise<void> {
     const now = Date.now();
     for (const session of this.sessions.values()) {
-      const idle = session.state.status === 'error' ? 60_000 : SESSION_IDLE;
+      const idle = session.state.status === 'error' || session.state.status === 'busy' ? 60_000 : session.released ? RELEASED * 4 : SESSION_IDLE;
       if (now - session.lastAccess > idle) this.stopSession(session);
     }
     // Раздачи, которые никто не смотрит, выключаем (данные остаются в кэше на диске).

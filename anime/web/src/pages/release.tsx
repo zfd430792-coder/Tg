@@ -7,6 +7,7 @@ import { BackLink, ErrorState, Poster, Progress, Spinner } from '../components/u
 import { episodesCount, minutes, plural } from '../format.ts';
 import { Link, navigate } from '../router.ts';
 import { ensureWriteAccess, haptic, shareLink, tg } from '../telegram.ts';
+import { adaptTorrentSource } from '../torrents.ts';
 import { updateSettings, userData, useSettings } from '../user.ts';
 
 const emptyState: ReleaseUserState = { favorite: false, subscribed: false, progress: [] };
@@ -71,8 +72,10 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
   }
   if (!release) return null;
 
-  const players = playersQuery.data?.players ?? [];
-  const others = players.filter((p) => p.kind !== 'hls');
+  // Торрент — только то, что этот браузер покажет; пока раздачи ищутся, его ещё нет.
+  const players = (playersQuery.data?.players ?? []).flatMap((p) => (p.kind === 'torrent' ? (adaptTorrentSource(p) ?? []) : [p]));
+  const others = players.filter((p) => p.kind === 'iframe' || (p.kind === 'torrent' && p.dubs.length > 0));
+  const listed = players.filter((p) => p.kind !== 'torrent' || p.dubs.length > 0);
   const othersUpTo = Math.max(0, ...others.map((p) => Math.max(p.lastEpisode ?? 0, ...p.dubs.map((d) => d.lastEpisode ?? 0))));
   // Плеер без сведений о числе серий (общий Kodik без токена и т.п.) — значит, есть хотя бы первая.
   const resume = resumeEpisode(release, state.progress, others.length > 0 ? Math.max(othersUpTo, 1) : 0);
@@ -182,10 +185,10 @@ export function ReleasePage({ id, config }: { id: string; config: AppConfig }) {
       )}
 
       {release.voices.length > 0 && <p className="hint">Озвучка AniLibria: {release.voices.join(', ')}</p>}
-      {players.length > 0 && (
+      {listed.length > 0 && (
         <p className="hint">
           Плееры:{' '}
-          {players
+          {listed
             .map((p) => (p.dubs.length > 1 ? `${p.title} (${p.dubs.length} ${plural(p.dubs.length, 'озвучка', 'озвучки', 'озвучек')})` : p.title))
             .join(' · ')}
         </p>

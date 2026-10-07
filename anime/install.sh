@@ -236,14 +236,6 @@ ask_options() {
   ask_checked ALLOHA_TOKEN "Токен Alloha" '^[A-Za-z0-9_.-]{8,128}$' secret
   ask_player_domain
 
-  current=$(env_get TORRENTS "$APP/.env")
-  if [[ -z "${TORRENTS:-}" ]]; then
-    printf '  Торрент-плеер (тест): серии прямо из торрент-раздач — 1080p, 4K и все озвучки раздачи. Сервер качает\n' >&2
-    printf '  только то, что смотрят, и держит кэш до 10 ГБ. Раздачи добавляются: sudo animini torrent add <тайтл> <magnet>.\n' >&2
-    printf '  Ваш сервер станет участником раздач, а за раздачу чужого контента хостинг может прислать жалобу.\n' >&2
-    if confirm "Включить торрент-плеер?" "$([[ $current == 1 ]] && echo y || echo n)"; then TORRENTS=1; else TORRENTS=0; fi
-  fi
-
   current=$(env_get HLS_PROXY "$APP/.env")
   if [[ -z "${HLS_PROXY:-}" ]]; then
     printf '  Прокси видео гонит весь видеотрафик через ваш сервер. Нужен, только если у зрителей не грузится видео.\n' >&2
@@ -349,17 +341,16 @@ KODIK_TOKEN=$KODIK_TOKEN
 CVH_PUBLISHER_ID=$CVH_PUBLISHER_ID
 PLAYER_DOMAIN=$PLAYER_DOMAIN
 ALLOHA_TOKEN=$ALLOHA_TOKEN
-TORRENTS=$TORRENTS
 NOTIFY_INTERVAL_MIN=${old_interval:-10}
 EOF
   # Настройки, которые установщик не спрашивает (HLS_HOSTS, SHIKIMORI_URL и т.п.), переносим как есть.
-  # Токены балансеров, которых больше нет, не переносим.
+  # Токены балансеров, которых больше нет, и старый выключатель торрентов (TORRENTS) не переносим.
   if [[ -n "$old_env" ]]; then
     local line key
     while IFS= read -r line; do
       [[ $line =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
       key=${BASH_REMATCH[1]}
-      [[ $key =~ ^(COMPOSE_FILE|APP_PORT)$|^(COLLAPS|LUMEX|TURBO|VEOVEO|VIBIX)_ ]] && continue
+      [[ $key =~ ^(COMPOSE_FILE|APP_PORT|TORRENTS)$|^(COLLAPS|LUMEX|TURBO|VEOVEO|VIBIX)_ ]] && continue
       grep -q "^${key}=" "$APP/.env" || printf '%s\n' "$line" >>"$APP/.env"
     done <<<"$old_env"
   fi

@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS torrents (
   added_at TEXT NOT NULL,
   UNIQUE (release_id, info_hash)
 );
+-- Когда для тайтла последний раз искали раздачи и что нашли.
+CREATE TABLE IF NOT EXISTS torrent_searches (
+  release_id INTEGER PRIMARY KEY,
+  searched_at TEXT NOT NULL,
+  found INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
 CREATE TABLE IF NOT EXISTS release_state (
   release_id INTEGER PRIMARY KEY,
   fresh_at TEXT,
@@ -89,16 +96,51 @@ export interface TorrentRow {
   info: unknown;
   error: string | null;
   addedAt: string;
+  /** manual — добавлена командой animini torrent add, остальные сервер нашёл сам. */
+  source: 'manual' | 'anilibria' | 'jacred';
+  title: string | null;
+  seeders: number | null;
+  size: number | null;
+  /** Как разбирать раздачу: сезон тайтла и сборник ли это сезонов. */
+  hint: { season: number; pack: boolean } | null;
+}
+
+/** Раздача, которую нашёл поиск (см. torrents/search.ts). */
+export interface FoundTorrentInput {
+  source: 'anilibria' | 'jacred';
+  magnet: string;
+  infoHash: string;
+  title: string;
+  seeders: number;
+  size: number | null;
+  season: number;
+  pack: boolean;
+}
+
+function json<T>(value: unknown): T | null {
+  try {
+    return typeof value === 'string' && value ? (JSON.parse(value) as T) : null;
+  } catch {
+    return null;
+  }
 }
 
 function toTorrent(row: Row): TorrentRow {
-  let info: unknown = null;
-  try {
-    info = row.info ? JSON.parse(row.info) : null;
-  } catch {
-    info = null;
-  }
-  return { id: row.id, releaseId: row.release_id, magnet: row.magnet, infoHash: row.info_hash, status: row.status, info, error: row.error ?? null, addedAt: row.added_at };
+  return {
+    id: row.id,
+    releaseId: row.release_id,
+    magnet: row.magnet,
+    infoHash: row.info_hash,
+    status: row.status,
+    info: json(row.info),
+    error: row.error ?? null,
+    addedAt: row.added_at,
+    source: row.source ?? 'manual',
+    title: row.title ?? null,
+    seeders: row.seeders ?? null,
+    size: row.size ?? null,
+    hint: json(row.hint),
+  };
 }
 
 function toUser(row: Row): User {
@@ -130,6 +172,20 @@ export class Store {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Новые столбцы в таблицах, созданных старой версией. */
+  private migrate(): void {
+    const columns = new Set((this.db.prepare('PRAGMA table_info(torrents)').all() as Row[]).map((c) => c.name));
+    const add: [string, string][] = [
+      ['source', "TEXT NOT NULL DEFAULT 'manual'"],
+      ['title', 'TEXT'],
+      ['seeders', 'INTEGER'],
+      ['size', 'INTEGER'],
+      ['hint', 'TEXT'],
+    ];
+    for (const [name, type] of add) if (!columns.has(name)) this.db.exec(`ALTER TABLE torrents ADD COLUMN ${name} ${type}`);
   }
 
   close(): void {
@@ -298,16 +354,63 @@ export class Store {
       .run(releaseId, ids.shikimori, ids.kinopoisk, ids.kpSeason, ids.imdb, now());
   }
 
-  /** Раздача для торрент-плеера: добавляется командой animini torrent add, разбирается сервером. */
+  /** Раздача, добавленная руками (animini torrent add): разбирается заново, даже если уже была. */
   addTorrent(releaseId: number, magnet: string, infoHash: string): TorrentRow {
     const row = this.db
       .prepare(
-        `INSERT INTO torrents (release_id, magnet, info_hash, status, added_at) VALUES (?, ?, ?, 'pending', ?)
-         ON CONFLICT(release_id, info_hash) DO UPDATE SET magnet = excluded.magnet, status = 'pending', error = NULL
+        `INSERT INTO torrents (release_id, magnet, info_hash, status, added_at, source) VALUES (?, ?, ?, 'pending', ?, 'manual')
+         ON CONFLICT(release_id, info_hash) DO UPDATE SET magnet = excluded.magnet, status = 'pending', error = NULL, source = 'manual'
          RETURNING *`,
       )
       .get(releaseId, magnet, infoHash, now()) as Row;
     return toTorrent(row);
+  }
+
+  /**
+   * Результат поиска раздач для тайтла: новые — в очередь на разбор, уже разобранные — как
+   * есть (обновляем число раздающих), те, что раньше не открылись, — попробовать снова. Найденные
+   * раньше, но пропавшие из поиска (обновили на трекере, умерли) — удаляем, если их источник
+   * ответил; добавленные руками — никогда.
+   */
+  replaceFoundTorrents(releaseId: number, found: FoundTorrentInput[], failed: FoundTorrentInput['source'][] = [], keep: Set<string> = new Set()): void {
+    this.db.exec('BEGIN');
+    try {
+      const upsert = this.db.prepare(
+        `INSERT INTO torrents (release_id, magnet, info_hash, status, added_at, source, title, seeders, size, hint)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(release_id, info_hash) DO UPDATE SET
+           title = excluded.title, seeders = excluded.seeders, size = excluded.size, hint = excluded.hint,
+           source = CASE WHEN torrents.source = 'manual' THEN 'manual' ELSE excluded.source END,
+           status = CASE WHEN torrents.status = 'error' THEN 'pending' ELSE torrents.status END,
+           error = CASE WHEN torrents.status = 'error' THEN NULL ELSE torrents.error END`,
+      );
+      for (const t of found) {
+        upsert.run(releaseId, t.magnet, t.infoHash, now(), t.source, t.title, t.seeders, t.size, JSON.stringify({ season: t.season, pack: t.pack }));
+      }
+      const wanted = new Set(found.map((t) => t.infoHash));
+      const rows = this.db.prepare(`SELECT id, info_hash, source FROM torrents WHERE release_id = ? AND source != 'manual'`).all(releaseId) as Row[];
+      const remove = this.db.prepare('DELETE FROM torrents WHERE id = ?');
+      // Источник не ответил — его прежние раздачи оставляем до следующего поиска.
+      for (const row of rows) if (!wanted.has(row.info_hash) && !keep.has(row.info_hash) && !failed.includes(row.source)) remove.run(row.id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  torrentSearch(releaseId: number): { searchedAt: string; found: number; error: string | null } | null {
+    const row = this.db.prepare('SELECT * FROM torrent_searches WHERE release_id = ?').get(releaseId) as Row | undefined;
+    return row ? { searchedAt: row.searched_at, found: row.found, error: row.error ?? null } : null;
+  }
+
+  saveTorrentSearch(releaseId: number, found: number, error: string | null): void {
+    this.db
+      .prepare(
+        `INSERT INTO torrent_searches (release_id, searched_at, found, error) VALUES (?, ?, ?, ?)
+         ON CONFLICT(release_id) DO UPDATE SET searched_at = excluded.searched_at, found = excluded.found, error = excluded.error`,
+      )
+      .run(releaseId, now(), found, error?.slice(0, 500) ?? null);
   }
 
   torrents(filter: { releaseId?: number; status?: TorrentRow['status'] } = {}): TorrentRow[] {

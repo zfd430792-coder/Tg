@@ -5,7 +5,7 @@
 //   node dev/mock-anilibria.ts            → http://localhost:4010
 //   ANILIBERTY_API=http://localhost:4010/api/v1 ANILIBERTY_MEDIA=http://localhost:4010 npm run dev
 
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 
@@ -13,6 +13,20 @@ const PORT = Number(process.env.MOCK_PORT ?? 4010);
 const ORIGIN = process.env.MOCK_ORIGIN ?? `http://localhost:${PORT}`;
 const CORS = process.env.MOCK_CORS !== '0';
 const MEDIA = path.resolve(import.meta.dirname, 'media');
+/**
+ * Раздачи для торрент-плеера (JSON): { "anilibria": { "<id релиза>": [раздачи как в AniLiberty] },
+ * "jacred": [результаты как в Jackett/Jacred] }. Читается при каждом запросе — тесты могут менять файл.
+ */
+const TORRENTS = process.env.MOCK_TORRENTS;
+
+function mockTorrents(): { anilibria: Record<string, unknown[]>; jacred: Raw[] } {
+  try {
+    const data = TORRENTS ? JSON.parse(readFileSync(TORRENTS, 'utf8')) : {};
+    return { anilibria: data.anilibria ?? {}, jacred: data.jacred ?? [] };
+  } catch {
+    return { anilibria: {}, jacred: [] };
+  }
+}
 
 type Raw = Record<string, any>;
 
@@ -481,6 +495,11 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (p === '/alloha/v2/movies/search') return send(res, 200, allohaSearch(url, req.headers.authorization));
+  // Jacred (агрегатор трекеров с Jackett-совместимым API): поиск по названию.
+  if (p === '/jacred/api/v2.0/indexers/all/results') {
+    const q = (url.searchParams.get('Query') ?? '').toLowerCase();
+    return send(res, 200, { Results: mockTorrents().jacred.filter((r) => q && String(r.Title ?? '').toLowerCase().includes(q)) });
+  }
   if (p === '/shikimori/api/graphql' && req.method === 'POST') return send(res, 200, shikimoriGraphql(await readBody(req)));
   if ((m = /^\/balancer\/(alloha)(\/.*)?$/.exec(p))) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(balancerPage('Alloha', url));
@@ -535,6 +554,7 @@ const server = createServer(async (req, res) => {
     }
     return send(res, 404, { message: 'Not found' });
   }
+  if ((m = /^\/anime\/torrents\/release\/(\d+)$/.exec(api))) return send(res, 200, mockTorrents().anilibria[m[1]] ?? []);
   if ((m = /^\/anime\/releases\/([\w-]+)$/.exec(api))) {
     const r = releases.find((x) => String(x.id) === m![1] || x.alias === m![1]);
     return r ? send(res, 200, r) : send(res, 404, { message: 'Not found' });

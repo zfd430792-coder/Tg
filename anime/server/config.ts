@@ -58,13 +58,25 @@ export const config = {
 
   notifyInterval: num('NOTIFY_INTERVAL_MIN', 10) * 60_000,
 
-  /** Торрент-плеер (тест): серии прямо из торрент-раздач, сервер качает только то, что смотрят. */
-  torrents: flag('TORRENTS'),
+  /**
+   * Торрент-плеер: серии прямо из торрент-раздач (1080p, 4K, все озвучки раздачи), сервер
+   * качает только то, что смотрят. Включён всегда; TORRENT_PLAYER=0 — выключить.
+   */
+  torrents: process.env.TORRENT_PLAYER?.trim() !== '0',
+  /**
+   * Где искать раздачи: сайты с Jackett-совместимым API (Jacred агрегирует RuTracker, Rutor,
+   * Kinozal, NNM-Club и другие), через запятую. off — не искать (раздачи AniLibria всё равно будут).
+   */
+  torrentSearch: (process.env.TORRENT_SEARCH_URL?.trim() === 'off' ? '' : (str('TORRENT_SEARCH_URL', 'https://jac.red') ?? ''))
+    .split(',')
+    .map((url) => url.trim().replace(/\/+$/, ''))
+    .filter(Boolean),
+  torrentSearchKey: str('TORRENT_SEARCH_KEY', '')!,
   torrentDir: path.resolve(root, str('TORRENT_DIR', path.join(path.dirname(dbPath), 'torrents'))!),
   /** Сколько места на диске может занять кэш раздач, ГБ. */
   torrentCacheGb: num('TORRENT_CACHE_GB', 10),
-  /** Сколько серий сервер может готовить одновременно (ffmpeg). */
-  torrentSessions: num('TORRENT_SESSIONS', 2),
+  /** Сколько серий сервер может готовить одновременно (ffmpeg без перекодирования почти не грузит процессор). */
+  torrentSessions: num('TORRENT_SESSIONS', 4),
   /** Сколько отдавать другим участникам раздачи, КБ/с. */
   torrentUploadKbps: num('TORRENT_UPLOAD_KBPS', 1000),
   /** 0 — без DHT (только трекеры и адреса из magnet), для тестов. */

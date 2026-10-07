@@ -55,22 +55,64 @@ function dubTitle(path: string): string {
   const dirs = parts.slice(0, -1).reverse();
   for (const dir of dirs.slice(0, Math.max(dirs.length - 1, 0))) {
     const name = dir.replace(/^[[(]+|[\])]+$/g, '').trim();
-    if (name && !GENERIC_DIR.test(name.replace(/[[\]()]/g, '').trim())) return name;
+    // «Season 2», «[ТВ-2]» — папки сезонов в сборнике, не студии.
+    if (name && !GENERIC_DIR.test(name.replace(/[[\]()]/g, '').trim()) && folderSeason(name) === null) return name;
   }
   const label = /\[([^\]]+)\][^[]*$/.exec(parts[parts.length - 1].replace(/\.[^.]+$/, ''));
   if (label && !/^\d{3,4}p$/i.test(label[1])) return label[1].trim();
   return 'Озвучка';
 }
 
+/** Сезон по имени папки: «Season 2», «S02», «[ТВ-2]», «2 сезон»; иначе null. */
+export function folderSeason(dir: string): number | null {
+  const t = dir.toLowerCase().replace(/ё/g, 'е');
+  const m =
+    /(?<![a-zа-я0-9])(?:тв|tv)[\s-]*(\d{1,2})(?![\d.])/.exec(t) ??
+    /(?<![\d.])(\d{1,2})(?:-?(?:й|ый|ой|ий))?\s*сезон/.exec(t) ??
+    /сезон[а-я]*[\s№#:]*(\d{1,2})(?![\d.])/.exec(t) ??
+    /season[\s#:-]*(\d{1,2})(?![\d.])/.exec(t) ??
+    /(?<![\d.])(\d{1,2})(?:st|nd|rd|th)\s+season/.exec(t) ??
+    /(?<![a-z0-9])s(\d{1,2})(?![a-z0-9])/.exec(t);
+  return m ? Number(m[1]) : null;
+}
+
+/** Сезон файла: по ближайшей папке, где он указан. */
+function fileSeason(filePath: string): number | null {
+  const dirs = filePath.split('/').slice(0, -1).reverse();
+  for (const dir of dirs) {
+    const season = folderSeason(dir);
+    if (season !== null) return season;
+  }
+  return null;
+}
+
+export interface LayoutOptions {
+  /** Сборник сезонов: брать только папку этого сезона. */
+  season?: number | null;
+}
+
 /** Серии и внешние озвучки раздачи. Один видеофайл — фильм или одна серия (номер 1). */
-export function parseLayout(name: string, files: TorrentFileInfo[]): TorrentLayout {
-  const videos = files.map((f, index) => ({ ...f, index })).filter((f) => VIDEO.test(f.path) && !/(^|\/)(sample|trailer|ncop|nced|pv)[^/]*$/i.test(f.path));
+export function parseLayout(name: string, files: TorrentFileInfo[], options: LayoutOptions = {}): TorrentLayout {
+  let videos = files.map((f, index) => ({ ...f, index })).filter((f) => VIDEO.test(f.path) && !/(^|\/)(sample|trailer|ncop|nced|pv)[^/]*$/i.test(f.path));
+  // Сборник сезонов — по папке на сезон. Берём свой, а нумерацию «25…48» (сквозную) — с единицы.
+  let offset = 0;
+  if (options.season !== undefined && options.season !== null) {
+    const seasons = new Set(videos.map((v) => fileSeason(v.path)));
+    if (seasons.size > 1 || !seasons.has(null)) {
+      videos = videos.filter((v) => (fileSeason(v.path) ?? 1) === options.season);
+      const numbers = videos.map((v) => episodeNumber(v.path)).filter((n): n is number => n !== null && n > 0);
+      const first = numbers.length ? Math.min(...numbers) : 1;
+      if (first > 1 && numbers.length > 1 && Math.max(...numbers) - first + 1 === new Set(numbers).size) offset = first - 1;
+    }
+  }
+  const audioAllowed = (filePath: string) => options.season === undefined || options.season === null || (fileSeason(filePath) ?? options.season) === options.season;
   const byOrdinal = new Map<number, TorrentEpisode>();
   if (videos.length === 1) {
     byOrdinal.set(1, { ordinal: 1, file: videos[0].index });
   } else {
     for (const video of videos) {
-      const ordinal = episodeNumber(video.path);
+      const number = episodeNumber(video.path);
+      const ordinal = number === null ? null : number - offset;
       if (ordinal === null || ordinal <= 0 || ordinal > 3000) continue;
       // Две версии одной серии — берём большую (обычно это основная, а не сэмпл).
       const current = byOrdinal.get(ordinal);
@@ -82,8 +124,9 @@ export function parseLayout(name: string, files: TorrentFileInfo[]): TorrentLayo
 
   const dubs = new Map<string, ExternalDub>();
   files.forEach((file, index) => {
-    if (!AUDIO.test(file.path)) return;
-    const ordinal = single ?? episodeNumber(file.path);
+    if (!AUDIO.test(file.path) || !audioAllowed(file.path)) return;
+    const number = episodeNumber(file.path);
+    const ordinal = single ?? (number === null ? null : number - offset);
     if (ordinal === null || !byOrdinal.has(ordinal)) return;
     const title = dubTitle(file.path);
     const dub = dubs.get(title) ?? { title, files: {} };

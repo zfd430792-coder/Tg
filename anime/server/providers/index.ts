@@ -22,8 +22,8 @@ export interface PlayersOptions {
   shikimoriUrl?: string | null;
   userAgent?: string;
   store?: Store;
-  /** Плееры из торрент-раздач (если торрент-плеер включён). */
-  torrents?: { players(releaseId: number): PlayerSource[] } | null;
+  /** Плеер из торрент-раздач (если торрент-плеер включён); search — поискать раздачи, если давно не искали. */
+  torrents?: { players(release: Release, options?: { search?: boolean }): PlayerSource[] } | null;
   log: (message: string, error?: unknown) => void;
 }
 
@@ -89,13 +89,13 @@ export class Players {
    * первая серия — он сразу появится), а балансеры кэшируем на 20 минут. Если кто-то из
    * них не ответил, неполный список держим всего минуту.
    */
-  async forRelease(release: Release): Promise<PlayerSource[]> {
+  async forRelease(release: Release, options: { searchTorrents?: boolean } = {}): Promise<PlayerSource[]> {
     const key = `players:${release.id}`;
     const { players, degraded } = await this.cache.get(key, 20 * 60_000, () => this.collect(release));
     if (degraded) this.cache.shorten(key, 60_000);
     // Свой плеер и торрент-раздачи — из свежих данных, без кэша: раздачу могли только что добавить.
     const own = anilibriaPlayer(release);
-    const torrents = this.torrents?.players(release.id) ?? [];
+    const torrents = this.torrents?.players(release, { search: options.searchTorrents }) ?? [];
     return [...(own ? [own] : []), ...torrents, ...players];
   }
 

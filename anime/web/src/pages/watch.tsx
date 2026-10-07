@@ -10,7 +10,8 @@ import { BackLink, ErrorState, Spinner } from '../components/ui.tsx';
 import { type Choice, lastChoice, resolveChoice, saveChoice, savedChoice } from '../players.ts';
 import { Link, navigate } from '../router.ts';
 import { haptic, tg } from '../telegram.ts';
-import { getSettings, userData } from '../user.ts';
+import { adaptTorrentSource, heightName, pickQuality, qualityOptions } from '../torrents.ts';
+import { getSettings, updateSettings, userData, useSettings } from '../user.ts';
 
 // hls.js весит ~400 КБ — грузим его только на странице просмотра.
 const Player = lazy(() => import('../components/player.tsx'));
@@ -64,10 +65,12 @@ function dubLabel(dub: Dub): string {
 
 export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string; config: AppConfig }) {
   const { data: release, error, loading, reload } = useFetch<Release>(`/api/releases/${encodeURIComponent(id)}`);
-  const playersQuery = useFetch<PlayersResponse>(release ? `/api/releases/${encodeURIComponent(id)}/players` : null, 10 * 60_000);
+  // torrents=1 — заодно поискать раздачи для торрент-плеера (страница тайтла их не ищет).
+  const playersQuery = useFetch<PlayersResponse>(release ? `/api/releases/${encodeURIComponent(id)}/players?torrents=1` : null, 10 * 60_000);
   const [state, setState] = useState<ReleaseUserState | null>(null);
   const [picked, setPicked] = useState<Choice | null>(null);
   const store = userData();
+  const settings = useSettings();
   const chips = useRef<HTMLDivElement>(null);
   const reportedEpisode = useRef<number | null>(null);
   const nextTimer = useRef<number | undefined>(undefined);
@@ -87,10 +90,34 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const preferred = (picked ?? saved)?.player ?? lastChoice()?.player ?? 'anilibria';
   const playersLoaded = Boolean(playersQuery.data || playersQuery.error);
   const waitingForPlayers = !playersLoaded && preferred !== 'anilibria';
-  const players = playersQuery.data?.players ?? (own && !waitingForPlayers ? [own] : []);
+  // Торрент — только озвучки и качества, которые этот браузер покажет (HEVC умеют не все).
+  const loadedPlayers = useMemo(
+    () => playersQuery.data?.players.flatMap((p) => (p.kind === 'torrent' ? (adaptTorrentSource(p) ?? []) : [p])),
+    [playersQuery.data],
+  );
+  const players = loadedPlayers ?? (own && !waitingForPlayers ? [own] : []);
   const selection = resolveChoice(players, picked ?? saved);
   const player = selection?.player ?? null;
   const dub = selection?.dub ?? null;
+
+  // Пока сервер ищет и открывает раздачи, обновляем список плееров: озвучки появляются по мере разбора.
+  const torrentBusy = Boolean(playersQuery.data?.players.some((p) => p.kind === 'torrent' && p.status));
+  const refreshPlayers = playersQuery.refresh;
+  useEffect(() => {
+    if (!torrentBusy) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - started > 4 * 60_000) window.clearInterval(timer);
+      else if (document.visibilityState === 'visible') refreshPlayers();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [torrentBusy, refreshPlayers]);
+
+  /** Серии выбранной озвучки торрента (в любом качестве); пока раздачи ищутся — не знаем. */
+  const torrentEpisodes = useMemo(() => {
+    if (player?.kind !== 'torrent' || player.dubs.length === 0) return null;
+    return new Set((player.variants ?? []).filter((v) => !dub || v.dub === dub.id).flatMap((v) => v.episodes));
+  }, [player, dub]);
 
   const wanted = validOrdinal(Number(ordinal));
   // Список серий общий для всех плееров: серии AniLibria и всё, что вышло в других плеерах.
@@ -109,10 +136,10 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   const available = useCallback(
     (e: Entry) => {
       if (player?.kind === 'hls') return Boolean(e.episode?.sources.length);
-      if (player?.kind === 'torrent' && !player.episodes?.includes(e.ordinal)) return false;
+      if (torrentEpisodes) return torrentEpisodes.has(e.ordinal);
       return !(limit && e.ordinal > limit);
     },
-    [player, limit],
+    [player, limit, torrentEpisodes],
   );
   const index = entries.findIndex((e) => e.ordinal === wanted);
   const entry = index >= 0 ? entries[index] : undefined;
@@ -278,6 +305,13 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
   });
   // Серию не передать в плеер (сезон неизвестен) — её выбирают в нём самом. У фильма серий нет.
   const pickEpisodeInside = player?.kind === 'iframe' && !player.frame?.episode && player.lastEpisode !== 1;
+  // Торрент: качества этой озвучки для серии (каждое — своя раздача) и какое включить.
+  const qualities = player?.kind === 'torrent' ? qualityOptions(player.variants ?? [], dub?.id ?? null, entry.ordinal) : [];
+  const quality = pickQuality(qualities, settings.quality);
+  const chooseQuality = (height: number) => {
+    haptic('select');
+    updateSettings({ quality: height });
+  };
 
   let screen;
   if (!player && playersLoaded) {
@@ -317,12 +351,23 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
         )}
       </div>
     );
+  } else if (player.kind === 'torrent' && player.dubs.length === 0) {
+    screen = (
+      <div className="player placeholder notice-screen">
+        <span className="spinner" />
+        <p>Ищу раздачи с озвучками для этого тайтла…</p>
+        <p className="hint">Сервер проверяет трекеры и открывает найденные раздачи — обычно это минута-две.</p>
+      </div>
+    );
   } else if (player.kind === 'torrent') {
-    screen = available(entry) ? (
+    screen = quality ? (
+      // Озвучку и качество TorrentPlayer меняет сам — с того же места серии.
       <TorrentPlayer
-        key={`${player.id}:${dub?.id ?? ''}:${entry.ordinal}`}
-        player={player.id}
-        dub={dub?.id ?? null}
+        key={`torrent:${entry.ordinal}`}
+        variant={quality.variant.id}
+        qualities={qualities.map((q) => q.height)}
+        quality={quality.height}
+        onQuality={chooseQuality}
         ordinal={entry.ordinal}
         title={release.title}
         subtitle={subtitle}
@@ -337,8 +382,13 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
     ) : (
       <div className="player placeholder notice-screen">
         <p>
-          В {dub?.title ? `озвучке «${dub.title}»` : 'этой раздаче'} {entry.ordinal}-й серии нет.
+          В {dub?.title ? `озвучке «${dub.title}»` : 'этих раздачах'} {entry.ordinal}-й серии нет.
         </p>
+        {fallback && (
+          <button className="btn" onClick={() => choose(fallback)}>
+            Смотреть в {fallback.title}
+          </button>
+        )}
       </div>
     );
   } else if (frame) {
@@ -375,7 +425,11 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
                 onClick={() => p.id !== player?.id && choose(p)}
               >
                 {p.title}
-                {p.dubs.length > 1 && <span className="chip-count">{p.dubs.length}</span>}
+                {p.kind === 'torrent' && p.status === 'searching' ? (
+                  <span className="chip-count">…</span>
+                ) : (
+                  p.dubs.length > 1 && <span className="chip-count">{p.dubs.length}</span>
+                )}
               </button>
             ))}
             {playersQuery.loading && <span className="hint source-loading">ищу плееры…</span>}
@@ -383,7 +437,10 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
           {player && player.dubs.length > 0 && (
             <div className="source-row dubs" aria-label="Озвучка">
               {player.dubs.map((d) => {
-                const missing = d.lastEpisode !== null && d.lastEpisode < entry.ordinal;
+                const missing =
+                  player.kind === 'torrent'
+                    ? !(player.variants ?? []).some((v) => v.dub === d.id && v.episodes.includes(entry.ordinal))
+                    : d.lastEpisode !== null && d.lastEpisode < entry.ordinal;
                 return (
                   <button
                     key={d.id}
@@ -399,6 +456,21 @@ export function WatchPage({ id, ordinal, config }: { id: string; ordinal: string
               })}
             </div>
           )}
+          {player?.kind === 'torrent' && qualities.length > 0 && (
+            <div className="source-row" aria-label="Качество">
+              {qualities.map((q) => (
+                <button
+                  key={q.height}
+                  className={`chip ${q.height === quality?.height ? 'active' : ''}`}
+                  onClick={() => q.height !== quality?.height && chooseQuality(q.height)}
+                  title={q.variant.transcode ? 'Это видео сервер перекодирует — готовится дольше' : undefined}
+                >
+                  {heightName(q.height)}
+                </button>
+              ))}
+            </div>
+          )}
+          {player?.kind === 'torrent' && player.status === 'more' && <p className="hint">Ищу ещё озвучки в других раздачах…</p>}
           {player?.kind === 'iframe' && (player.dubs.length === 0 || pickEpisodeInside) && (
             <p className="hint">
               {pickEpisodeInside && player.dubs.length === 0

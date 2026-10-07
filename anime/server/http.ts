@@ -210,8 +210,13 @@ export async function buildServer(deps: HttpDeps) {
     const { idOrAlias } = request.params as { idOrAlias: string };
     if (!/^[\w-]{1,120}$/.test(idOrAlias)) throw new HttpError(400, 'Неверный адрес релиза');
     const release = await loadRelease(idOrAlias);
-    cacheFor(reply, 300);
-    return { players: await deps.players.forRelease(release) };
+    // Искать раздачи просит только страница просмотра: так их не запускают роботы на страницах тайтлов.
+    const searchTorrents = (request.query as Record<string, unknown>)?.torrents === '1';
+    const players = await deps.players.forRelease(release, { searchTorrents });
+    // Пока раздачи ищутся и разбираются, список меняется — его не кэшируем.
+    if (players.some((p) => p.status)) reply.header('cache-control', 'no-store');
+    else cacheFor(reply, 300);
+    return { players };
   });
 
   // Обёртка для плеера CVH: его встраивают скриптом, а не ссылкой. Отдаём её только с
@@ -342,21 +347,32 @@ export async function buildServer(deps: HttpDeps) {
   if (torrents) {
     app.post('/api/torrent/play', async (request): Promise<TorrentPlayState> => {
       const b = (request.body ?? {}) as Record<string, unknown>;
-      const player = typeof b.player === 'string' ? b.player : '';
-      const dub = typeof b.dub === 'string' ? b.dub : null;
+      const variant = typeof b.variant === 'string' ? b.variant : '';
       const ordinal = Number(b.ordinal);
+      const start = b.start === undefined ? 0 : Number(b.start);
+      const previous = typeof b.previous === 'string' && /^[0-9a-f]{20}$/.test(b.previous) ? b.previous : null;
       if (
-        !/^torrent-\d{1,9}$/.test(player) ||
-        (dub !== null && !/^torrent-\d{1,9}:[ex]\d{1,4}$/.test(dub)) ||
+        !/^\d{1,9}:[ex]\d{1,4}$/.test(variant) ||
         !Number.isInteger(ordinal) ||
         ordinal < 1 ||
-        ordinal > 3000
+        ordinal > 3000 ||
+        !Number.isFinite(start) ||
+        start < 0 ||
+        start > 24 * 3600
       ) {
         throw new HttpError(400, 'Неверный запрос');
       }
-      const state = torrents.play(player, dub, ordinal);
+      const state = torrents.play(variant, ordinal, Math.floor(start), previous);
       if (state.status !== 'ready') return state;
-      return { status: 'ready', playlist: `/api/torrent/hls/${state.session}/index.m3u8`, duration: state.duration, height: state.height, codec: state.codec };
+      return {
+        status: 'ready',
+        playlist: `/api/torrent/hls/${state.session}/index.m3u8`,
+        duration: state.duration,
+        height: state.height,
+        codec: state.codec,
+        offset: state.offset,
+        session: state.session,
+      };
     });
 
     app.get('/api/torrent/hls/:session/:file', async (request, reply) => {

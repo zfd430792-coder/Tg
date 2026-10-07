@@ -84,7 +84,7 @@ export interface Dub {
  * видеобалансера (Kodik, CVH, Alloha), как переключатель «плеер» на аниме-сайтах.
  */
 export interface PlayerSource {
-  /** 'anilibria', 'kodik', 'cvh', 'alloha', 'torrent-<n>'. */
+  /** 'anilibria', 'kodik', 'cvh', 'alloha', 'torrent'. */
   id: string;
   title: string;
   /** hls — наш плеер AniLibria, iframe — плеер балансера, torrent — наш плеер из торрент-раздачи. */
@@ -99,14 +99,43 @@ export interface PlayerSource {
   events: 'kodik' | null;
   lastEpisode: number | null;
   season: string | null;
-  /** Какие серии есть (у торрент-раздачи); у остальных плееров не известно. */
+  /** Какие серии есть (у торрент-раздач); у остальных плееров не известно. */
   episodes?: number[];
+  /** Торрент: варианты озвучки и качества — раздача и дорожка в ней. */
+  variants?: TorrentVariant[];
+  /** Торрент: searching — раздачи ещё ищутся, more — что-то есть, но ищем ещё озвучки. */
+  status?: 'searching' | 'more' | null;
+}
+
+/** Озвучка в одной из раздач тайтла: в каком качестве и какие серии. */
+export interface TorrentVariant {
+  /** «<раздача>:e<дорожка внутри видео>» или «<раздача>:x<папка с озвучкой>». */
+  id: string;
+  /** id озвучки в списке dubs плеера. */
+  dub: string;
+  height: number | null;
+  /** Кодек видео, которое получит браузер: h264, hevc, av1. */
+  codec: string | null;
+  tenBit: boolean;
+  /** Сервер перекодирует видео (H.264 10 бит): дольше готовится, грузит процессор. */
+  transcode: boolean;
+  episodes: number[];
+  seeders: number;
 }
 
 /** Состояние серии из торрент-раздачи: пока готовится — статус, потом адрес плейлиста. */
 export type TorrentPlayState =
   | { status: 'starting'; message: string; peers: number; speed: number }
-  | { status: 'ready'; playlist: string; duration: number | null; height: number | null; codec: string | null }
+  | {
+      status: 'ready';
+      playlist: string;
+      duration: number | null;
+      height: number | null;
+      codec: string | null;
+      /** С какой секунды серии сервер готовит видео (после перемотки или смены озвучки). */
+      offset: number;
+      session: string;
+    }
   | { status: 'error' | 'busy'; message: string };
 
 /** Параметры адреса встроенного плеера: у каждого балансера свои. */

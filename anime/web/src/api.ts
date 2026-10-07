@@ -47,7 +47,9 @@ function load(url: string): Promise<unknown> {
       return data;
     })
     .catch((error: ApiError) => {
-      cache.set(url, { error, at: Date.now() });
+      // При обновлении в фоне старые данные не теряем: ошибка — только если показать нечего.
+      const previous = cache.get(url);
+      cache.set(url, previous?.data !== undefined ? { data: previous.data, at: previous.at } : { error, at: Date.now() });
       throw error;
     });
   cache.set(url, entry);
@@ -67,6 +69,8 @@ export interface FetchState<T> {
   error: ApiError | undefined;
   loading: boolean;
   reload: () => void;
+  /** Обновить в фоне: пока идёт запрос, показываем старые данные. */
+  refresh: () => void;
 }
 
 export function useFetch<T>(url: string | null, ttlMs = 5 * 60_000): FetchState<T> {
@@ -97,11 +101,19 @@ export function useFetch<T>(url: string | null, ttlMs = 5 * 60_000): FetchState<
       .finally(() => setTick((t) => t + 1));
   }, [url]);
 
+  const refresh = useCallback(() => {
+    if (!url) return;
+    load(url)
+      .catch(() => undefined)
+      .finally(() => setTick((t) => t + 1));
+  }, [url]);
+
   return {
     data: entry?.data as T | undefined,
     error: entry?.data === undefined ? entry?.error : undefined,
     loading: Boolean(url) && entry?.data === undefined && !entry?.error,
     reload,
+    refresh,
   };
 }
 

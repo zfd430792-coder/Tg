@@ -70,9 +70,9 @@ before(async () => {
     players: new Players({ kodikToken: 'test-kodik', kodikApi: `${origin}/kodik-api`, log: () => undefined }),
     // Торрент-плеер подменяем: его самого проверяет server/torrents/torrents.test.ts.
     torrents: {
-      play: (_player: string, _dub: string | null, ordinal: number) =>
+      play: (_variant: string, ordinal: number, start: number) =>
         ordinal === 1
-          ? { status: 'ready', session: 'a'.repeat(20), duration: 60, height: 1080, codec: 'h264' }
+          ? { status: 'ready', session: 'a'.repeat(20), duration: 60, height: 1080, codec: 'h264', offset: start }
           : { status: 'starting', message: 'Подключаюсь к раздаче…', peers: 0, speed: 0 },
       playlist: async (session: string) => (session === 'a'.repeat(20) ? '#EXTM3U\n#EXTINF:4,\ns00000.m4s\n' : null),
       file: () => null,
@@ -197,11 +197,26 @@ describe('страница плеера CVH', () => {
 describe('торрент-плеер', () => {
   test('готовая серия — адрес плейлиста, неверный запрос — 400', async () => {
     const play = (payload: unknown) => app.inject({ method: 'POST', url: '/api/torrent/play', payload: payload as object });
-    const ready = await play({ player: 'torrent-1', dub: 'torrent-1:e0', ordinal: 1 });
+    const ready = await play({ variant: '1:e0', ordinal: 1, start: 600.7 });
     assert.equal(ready.statusCode, 200);
-    assert.deepEqual(ready.json(), { status: 'ready', playlist: `/api/torrent/hls/${'a'.repeat(20)}/index.m3u8`, duration: 60, height: 1080, codec: 'h264' });
-    assert.equal((await play({ player: 'torrent-1', dub: null, ordinal: 2 })).json().status, 'starting');
-    for (const bad of [{ player: 'kodik', ordinal: 1 }, { player: 'torrent-1', dub: '../x', ordinal: 1 }, { player: 'torrent-1', ordinal: 0 }, { player: 'torrent-1', ordinal: 1.5 }]) {
+    assert.deepEqual(ready.json(), {
+      status: 'ready',
+      playlist: `/api/torrent/hls/${'a'.repeat(20)}/index.m3u8`,
+      duration: 60,
+      height: 1080,
+      codec: 'h264',
+      offset: 600,
+      session: 'a'.repeat(20),
+    });
+    assert.equal((await play({ variant: '1:x2', ordinal: 2 })).json().status, 'starting');
+    for (const bad of [
+      { variant: 'kodik', ordinal: 1 },
+      { variant: '1:e0/../x', ordinal: 1 },
+      { variant: '1:e0', ordinal: 0 },
+      { variant: '1:e0', ordinal: 1.5 },
+      { variant: '1:e0', ordinal: 1, start: -5 },
+      { variant: '1:e0', ordinal: 1, start: 'x' },
+    ]) {
       assert.equal((await play(bad)).statusCode, 400, JSON.stringify(bad));
     }
   });

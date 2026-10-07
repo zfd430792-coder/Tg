@@ -64,12 +64,13 @@ if (config.playerUrl && config.siteUrl && new URL(config.playerUrl).origin === n
 if (config.cvhPublisherId && !config.playerUrl) {
   console.warn('CVH выключен: для его плеера нужен отдельный поддомен — задайте PLAYER_DOMAIN (например, player.<ваш домен>).');
 }
-// Торрент-плеер (тест): включается TORRENTS=1, нужен ffmpeg. webtorrent грузим только тогда,
-// и если торренты не поднялись, сайт работает без них.
+// Торрент-плеер: раздачи ищутся сами, серии готовит ffmpeg. Выключить — TORRENT_PLAYER=0.
+// webtorrent грузим только тогда, и если торренты не поднялись, сайт работает без них.
 let torrents: TorrentLibrary | null = null;
 if (config.torrents) {
   try {
     const { TorrentStreamer } = await import('./torrents/streamer.ts');
+    const { TorrentSearch } = await import('./torrents/search.ts');
     const streamer = new TorrentStreamer({
       dir: config.torrentDir,
       cacheBytes: config.torrentCacheGb * 1024 ** 3,
@@ -82,8 +83,15 @@ if (config.torrents) {
       log,
     });
     await streamer.start();
-    torrents = new TorrentLibrary({ store, streamer, log });
+    const search = new TorrentSearch({
+      jackett: config.torrentSearch,
+      apiKey: config.torrentSearchKey,
+      userAgent: `${config.appName}/0.1`,
+      anilibria: api,
+    });
+    torrents = new TorrentLibrary({ store, streamer, search, log });
     torrents.start();
+    console.log(`Торрент-плеер: раздачи ищу в ${search.sources.join(', ') || 'нигде (только добавленные руками)'}`);
   } catch (error) {
     log('Торрент-плеер не запустился, сайт работает без него', error);
   }

@@ -50,7 +50,7 @@ doctor() {
     player_domain=$(sed -n 's/^PLAYER_DOMAIN=//p' "$APP/.env" | tail -n 1)
     players+=", CVH$([[ -n $player_domain ]] && echo " (плеер на $player_domain)" || echo ' — выключен: нет PLAYER_DOMAIN')"
   fi
-  grep -q '^TORRENTS=1' "$APP/.env" && players+=", Торрент (тест; раздачи: animini torrent list)"
+  grep -q '^TORRENT_PLAYER=0' "$APP/.env" || players+=", Торрент (раздачи ищутся сами)"
   if grep -q '^ALLOHA_TOKEN=.' "$APP/.env"; then
     players+=", Alloha$(grep -q '^KODIK_TOKEN=.' "$APP/.env" || echo ' (ID Кинопоиска — только через Shikimori, из России он недоступен)')"
   fi
@@ -73,6 +73,12 @@ doctor() {
   else
     mark bad "не отвечает. Последние строки лога:"
     compose logs --tail 15 app 2>&1 | sed 's/^/      /'
+  fi
+
+  if ! grep -q '^TORRENT_PLAYER=0' "$APP/.env"; then
+    echo "Торрент-плеер"
+    (cd "$APP" && timeout 90 docker compose exec -T app node --disable-warning=ExperimentalWarning server/cli.ts torrent status 2>&1) | sed 's/^/  /' ||
+      mark bad "не удалось проверить (приложение не отвечает?)"
   fi
 
   echo "DNS"
@@ -160,7 +166,7 @@ case "${1:-help}" in
     compose restart
     ;;
   torrent)
-    # Раздачи для торрент-плеера: add <тайтл> <magnet>, list [тайтл], rm <номер>
+    # Торрент-плеер: status, search <тайтл>, list [тайтл], add <тайтл> <magnet>, rm <номер>
     shift
     compose exec -T app node --disable-warning=ExperimentalWarning server/cli.ts torrent "$@"
     ;;
@@ -197,7 +203,7 @@ case "${1:-help}" in
   update     обновить с GitHub прямо сейчас
   restart    перезапустить
   config     поменять токен бота, домен и другие настройки
-  torrent    раздачи для торрент-плеера: torrent add <тайтл> <magnet>, torrent list, torrent rm <номер>
+  torrent    торрент-плеер: torrent status, torrent search <тайтл>, torrent list, torrent add <тайтл> <magnet>
   backup     сохранить базу пользователей в файл
   uninstall  удалить всё с сервера
 HELP

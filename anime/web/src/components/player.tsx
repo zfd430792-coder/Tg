@@ -15,8 +15,25 @@ import { getSettings, updateSettings, useSettings } from '../user.ts';
 import { Icon } from './icons.tsx';
 import { Sheet } from './ui.tsx';
 
+/**
+ * Серия из торрент-раздачи: сервер готовит видео с какой-то секунды (offset), а полоса
+ * перемотки — на всю серию. Перемотку туда, где видео ещё нет, и смену качества (это другая
+ * раздача) решает TorrentPlayer: он просит сервер готовить серию с нужного места.
+ */
+export interface TorrentTimeline {
+  offset: number;
+  duration: number | null;
+  onSeekOutside: (time: number) => void;
+  /** Где сейчас смотрят (секунда серии): с этого места включится другая озвучка или качество. */
+  onTime: (time: number) => void;
+  qualities: number[];
+  quality: number | null;
+  onQuality: (height: number) => void;
+}
+
 export interface PlayerProps {
   episode: Episode;
+  torrent?: TorrentTimeline;
   title: string;
   subtitle: string;
   poster: string | null;
@@ -38,6 +55,12 @@ function preferNativeHls(): boolean {
   const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const safari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(ua);
   return (iOS || safari) && Boolean(document.createElement('video').canPlayType('application/vnd.apple.mpegurl'));
+}
+
+/** «4K» для 2160p, иначе «1080p». */
+export function heightLabel(height: number | null): string {
+  if (!height) return 'Авто';
+  return height >= 2000 ? '4K' : `${height}p`;
 }
 
 function closestLevel(heights: number[], wanted: number): number {
@@ -62,7 +85,7 @@ export default function Player(props: PlayerProps) {
 
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(props.startAt);
-  const [duration, setDuration] = useState(episode.duration ?? 0);
+  const [duration, setDuration] = useState(props.torrent?.duration ?? episode.duration ?? 0);
   const [buffered, setBuffered] = useState(0);
   const [waiting, setWaiting] = useState(true);
   const [needsTap, setNeedsTap] = useState(false);
@@ -99,10 +122,12 @@ export default function Player(props: PlayerProps) {
   const report = useCallback((leaving: boolean, ended = false, target?: HTMLVideoElement) => {
     const el = target ?? video.current;
     if (!el || !el.duration || el.currentTime < 1) return;
+    const torrent = latest.current.torrent;
+    const at = el.currentTime + (torrent?.offset ?? 0);
     const ending = latest.current.episode.ending;
-    const watched = ended || Boolean(ending && el.currentTime >= ending.start);
+    const watched = ended || Boolean(ending && at >= ending.start);
     lastReport.current = el.currentTime;
-    latest.current.onProgress(el.currentTime, el.duration, { watched, leaving });
+    latest.current.onProgress(at, torrent?.duration ?? el.duration, { watched, leaving });
   }, []);
 
   // ---- Источник видео ----
@@ -120,7 +145,8 @@ export default function Player(props: PlayerProps) {
     const { episode } = latest.current;
     setError(null);
     setWaiting(true);
-    const start = resumeAt.current;
+    // resumeAt — секунда серии; у торрента видео начинается с offset.
+    const start = Math.max(0, resumeAt.current - (latest.current.torrent?.offset ?? 0));
     const best = episode.sources[episode.sources.length - 1]?.url;
     if (!best) {
       setError('Видео для этой серии пока нет');
@@ -190,15 +216,17 @@ export default function Player(props: PlayerProps) {
 
   useEffect(() => {
     const el = video.current!;
+    const offset = () => latest.current.torrent?.offset ?? 0;
     const onTime = () => {
-      setTime(el.currentTime);
+      setTime(el.currentTime + offset());
+      if (el.currentTime > 0) latest.current.torrent?.onTime(el.currentTime + offset());
       if (!el.paused && Math.abs(el.currentTime - lastReport.current) >= 10) report(false);
     };
     const onProgress = () => {
       const t = el.currentTime;
       for (let i = 0; i < el.buffered.length; i++) {
         if (el.buffered.start(i) <= t + 0.5 && el.buffered.end(i) >= t) {
-          setBuffered(el.buffered.end(i));
+          setBuffered(el.buffered.end(i) + offset());
           return;
         }
       }
@@ -217,7 +245,8 @@ export default function Player(props: PlayerProps) {
       report(false, true);
       if (latest.current.hasNext && getSettings().autoNext) setCountdown(5);
     };
-    const onDuration = () => Number.isFinite(el.duration) && setDuration(el.duration);
+    // У торрента плейлист растёт, пока сервер готовит серию: длительность берём всей серии.
+    const onDuration = () => !latest.current.torrent?.duration && Number.isFinite(el.duration) && setDuration(el.duration);
     const onWaiting = () => setWaiting(true);
     const onReady = () => setWaiting(false);
     const onVolume = () => {
@@ -290,6 +319,20 @@ export default function Player(props: PlayerProps) {
   const seekTo = useCallback((value: number) => {
     const el = video.current;
     if (!el) return;
+    const torrent = latest.current.torrent;
+    if (torrent) {
+      // Видео есть только с offset до того места, докуда сервер успел подготовить серию.
+      const target = Math.max(0, torrent.duration ? Math.min(value, torrent.duration - 1) : value);
+      const local = target - torrent.offset;
+      const end = el.seekable.length ? el.seekable.end(el.seekable.length - 1) : 0;
+      if (local < -1 || local > end + 20) {
+        torrent.onSeekOutside(target);
+        return;
+      }
+      el.currentTime = Math.max(0, Math.min(local, end));
+      setTime(el.currentTime + torrent.offset);
+      return;
+    }
     const max = Number.isFinite(el.duration) ? el.duration : value;
     el.currentTime = Math.max(0, Math.min(value, max - 0.2));
     setTime(el.currentTime);
@@ -298,7 +341,7 @@ export default function Player(props: PlayerProps) {
   const seekBy = useCallback(
     (delta: number) => {
       if (!video.current) return;
-      seekTo(video.current.currentTime + delta);
+      seekTo(video.current.currentTime + (latest.current.torrent?.offset ?? 0) + delta);
       showFlash(delta > 0 ? `+${delta} с` : `−${-delta} с`);
       haptic('light');
     },
@@ -516,10 +559,18 @@ export default function Player(props: PlayerProps) {
 
   const visible = controls || !playing || menu !== null || needsTap;
   const pct = (value: number) => (duration > 0 ? `${Math.min(100, (value / duration) * 100)}%` : '0%');
-  const auto = settings.quality === 'auto';
-  const qualityLabel = auto ? `Авто${activeHeight ? ` (${activeHeight}p)` : ''}` : `${settings.quality}p`;
-  const qualityOptions = [...new Set(levels)].sort((a, b) => b - a);
-  const canAuto = Boolean(hls.current ? levels.length > 1 : episode.master);
+  // У торрента каждое качество — своя раздача: переключает TorrentPlayer.
+  const torrent = props.torrent;
+  const auto = !torrent && settings.quality === 'auto';
+  const qualityLabel = torrent ? heightLabel(torrent.quality) : auto ? `Авто${activeHeight ? ` (${activeHeight}p)` : ''}` : `${settings.quality}p`;
+  const qualityOptions = torrent ? torrent.qualities : [...new Set(levels)].sort((a, b) => b - a);
+  const canAuto = !torrent && Boolean(hls.current ? levels.length > 1 : episode.master);
+  const pickQuality = (q: number) => {
+    if (!torrent) return setQuality(q);
+    setMenu(null);
+    haptic('select');
+    if (q !== torrent.quality) torrent.onQuality(q);
+  };
   const menuAsSheet = fullscreen === 'none' && (box.current?.clientHeight ?? 0) < 360;
 
   const onSeekInput = (value: number) => {
@@ -570,11 +621,12 @@ export default function Player(props: PlayerProps) {
             </button>
           )}
           {qualityOptions.map((q) => (
-            <button key={q} className="pl-menu-row" onClick={() => setQuality(q)}>
+            <button key={q} className="pl-menu-row" onClick={() => pickQuality(q)}>
               <span>
-                {q}p{q >= 1080 ? ' FHD' : q >= 720 ? ' HD' : ''}
+                {heightLabel(q)}
+                {q >= 2000 ? ' UHD' : q >= 1080 ? ' FHD' : q >= 720 ? ' HD' : ''}
               </span>
-              {settings.quality === q && <Icon name="check" size={18} />}
+              {(torrent ? torrent.quality === q : settings.quality === q) && <Icon name="check" size={18} />}
             </button>
           ))}
         </>
@@ -671,7 +723,8 @@ export default function Player(props: PlayerProps) {
             <button
               className="btn"
               onClick={() => {
-                resumeAt.current = video.current?.currentTime || time;
+                const local = video.current?.currentTime ?? 0;
+                resumeAt.current = local > 0 ? local + (props.torrent?.offset ?? 0) : time;
                 setAttempt((a) => a + 1);
               }}
             >
